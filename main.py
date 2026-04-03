@@ -15,7 +15,6 @@ except (ValueError, TypeError):
     OWNER_ID = 0
 
 # --- SAFETY CHECK ---
-# If Railway is missing a variable, this will tell you exactly which one in the logs
 if not BOT_TOKEN or not MONGO_URI or OWNER_ID == 0:
     print("❌ ERROR: Missing Environment Variables!")
     print(f"BOT_TOKEN: {'✅ Set' if BOT_TOKEN else '❌ MISSING'}")
@@ -98,7 +97,11 @@ def handle_contact(message):
     main_menu(message.chat.id, user_first_name=message.from_user.first_name)
 
 def main_menu(chat_id, message_id=None, user_first_name="User"):
-    config = settings_col.find_one({"_id": "config"})
+    config = settings_col.find_one({"_id": "config"}) or {}
+    
+    # Safely fetch links, providing defaults if they are missing in the database
+    support_link = config.get("support_link", "https://t.me/Nexapayz")
+    pay_proof_link = config.get("pay_proof_link", "https://t.me/Nexapayz")
     
     # Exact Old UI Text
     text = (
@@ -113,12 +116,12 @@ def main_menu(chat_id, message_id=None, user_first_name="User"):
         "↳ Guaranteed discounted prices"
     )
     
-    # Exact Old UI Buttons (minus the spin)
+    # Exact Old UI Buttons
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("🛒 Shop Now", callback_data="shop_menu"))
     markup.row(InlineKeyboardButton("📦 My Orders", callback_data="dummy"), InlineKeyboardButton("👤 Profile", callback_data="dummy"))
-    markup.row(InlineKeyboardButton("↗️ Pay Proof", url=config["pay_proof_link"]), InlineKeyboardButton("❓ How to Use", callback_data="dummy"))
-    markup.row(InlineKeyboardButton("💬 Support", url=config["support_link"]), InlineKeyboardButton("🎁 Referral", callback_data="dummy"))
+    markup.row(InlineKeyboardButton("↗️ Pay Proof", url=pay_proof_link), InlineKeyboardButton("❓ How to Use", callback_data="dummy"))
+    markup.row(InlineKeyboardButton("💬 Support", url=support_link), InlineKeyboardButton("🎁 Referral", callback_data="dummy"))
     
     try:
         if message_id:
@@ -156,7 +159,7 @@ def admin_panel(message):
 def callback_handler(call):
     chat_id = call.message.chat.id
     msg_id = call.message.message_id
-    config = settings_col.find_one({"_id": "config"})
+    config = settings_col.find_one({"_id": "config"}) or {}
 
     # User Callbacks
     if call.data == "check_join":
@@ -187,31 +190,38 @@ def callback_handler(call):
 
     elif call.data == "prod_drip":
         markup = InlineKeyboardMarkup()
+        products = config.get("products", {})
         for k in ["drip_1", "drip_3", "drip_7", "drip_30"]:
-            p = config["products"][k]
-            markup.add(InlineKeyboardButton(f"{p['days']} Day{'s' if p['days']>1 else ''} — ₹{p['price']}", callback_data=f"buy_{k}"))
+            p = products.get(k)
+            if p: markup.add(InlineKeyboardButton(f"{p['days']} Day{'s' if p['days']>1 else ''} — ₹{p['price']}", callback_data=f"buy_{k}"))
         markup.add(InlineKeyboardButton("⬅️ Back to Shop", callback_data="shop_android"))
         bot.edit_message_text("🏷 **DRIP CLIENT MOBILE**\n\nChoose a plan 👇", chat_id, msg_id, reply_markup=markup, parse_mode="Markdown")
 
     elif call.data == "prod_prime":
         markup = InlineKeyboardMarkup()
+        products = config.get("products", {})
         for k in ["prime_1", "prime_5", "prime_10"]:
-            p = config["products"][k]
-            markup.add(InlineKeyboardButton(f"{p['days']} Day{'s' if p['days']>1 else ''} — ₹{p['price']}", callback_data=f"buy_{k}"))
+            p = products.get(k)
+            if p: markup.add(InlineKeyboardButton(f"{p['days']} Day{'s' if p['days']>1 else ''} — ₹{p['price']}", callback_data=f"buy_{k}"))
         markup.add(InlineKeyboardButton("⬅️ Back to Shop", callback_data="shop_android"))
         bot.edit_message_text("🏷 **PRIME HOOK MOD**\n\nChoose a plan 👇", chat_id, msg_id, reply_markup=markup, parse_mode="Markdown")
 
     elif call.data == "prod_alpha":
         markup = InlineKeyboardMarkup()
+        products = config.get("products", {})
         for k in ["alpha_7", "alpha_30"]:
-            p = config["products"][k]
-            markup.add(InlineKeyboardButton(f"{p['days']} Days — ₹{p['price']}", callback_data=f"buy_{k}"))
+            p = products.get(k)
+            if p: markup.add(InlineKeyboardButton(f"{p['days']} Days — ₹{p['price']}", callback_data=f"buy_{k}"))
         markup.add(InlineKeyboardButton("⬅️ Back to Shop", callback_data="shop_ios"))
         bot.edit_message_text("🏷 **IOS - ALPHA PANEL**\n\nChoose a plan 👇", chat_id, msg_id, reply_markup=markup, parse_mode="Markdown")
 
     elif call.data.startswith("buy_"):
         prod_key = call.data.replace("buy_", "")
-        p = config["products"][prod_key]
+        p = config.get("products", {}).get(prod_key)
+        
+        if not p:
+            return bot.answer_callback_query(call.id, "Product not found!", show_alert=True)
+            
         text = (
             f"🔥 **ORDER CREATED**\n"
             f"━━━━━━━━━━━━━━━━━━\n"
@@ -240,7 +250,9 @@ def callback_handler(call):
         prod_key = call.data.replace("paid_", "")
         bot.answer_callback_query(call.id, "Verification sent to Admins!", show_alert=True)
         
-        p = config["products"][prod_key]
+        p = config.get("products", {}).get(prod_key)
+        if not p: return
+        
         log_entry = f"User {call.from_user.id} claimed payment for {p['name']} (₹{p['price']})"
         logs_col.insert_one({"log": log_entry}) 
         
@@ -293,7 +305,7 @@ def callback_handler(call):
     elif call.data == "admin_prices":
         if call.from_user.id != OWNER_ID: return bot.answer_callback_query(call.id, "Owner only.", show_alert=True)
         text = "⚙️ **Send a command to update a price.**\nFormat: `key new_price`\n\n**Keys available:**\n"
-        for k, v in config["products"].items():
+        for k, v in config.get("products", {}).items():
             text += f"`{k}` : {v['name']} ({v['days']}d) = ₹{v['price']}\n"
         msg = bot.send_message(chat_id, text, parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_price_change)
@@ -342,8 +354,8 @@ def process_remove_admin(message):
 def process_price_change(message):
     try:
         key, new_price = message.text.split()
-        config = settings_col.find_one({"_id": "config"})
-        if key in config["products"]:
+        config = settings_col.find_one({"_id": "config"}) or {}
+        if key in config.get("products", {}):
             settings_col.update_one({"_id": "config"}, {"$set": {f"products.{key}.price": int(new_price)}})
             bot.send_message(message.chat.id, f"✅ Price for {key} updated to ₹{new_price}")
         else:
