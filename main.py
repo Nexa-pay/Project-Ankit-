@@ -4,16 +4,24 @@ import os
 import pymongo
 
 # --- CONFIGURATION ---
-BOT_TOKEN = os.getenv("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 FORCE_JOIN_CHANNEL = os.getenv("FORCE_JOIN_CHANNEL", "@Nexapayz") 
+MONGO_URI = os.getenv("MONGO_URI")
 
-# Force OWNER_ID to be an integer so it never fails the permission check
+# Now using OWNER_ID properly so it makes sense!
 try:
-    OWNER_ID = int(os.getenv("ADMIN_ID", "0")) 
-except ValueError:
+    OWNER_ID = int(os.getenv("OWNER_ID", "0")) 
+except (ValueError, TypeError):
     OWNER_ID = 0
-    
-MONGO_URI = os.getenv("MONGO_URI", "YOUR_MONGO_URI_HERE")
+
+# --- SAFETY CHECK ---
+# If Railway is missing a variable, this will tell you exactly which one in the logs
+if not BOT_TOKEN or not MONGO_URI or OWNER_ID == 0:
+    print("❌ ERROR: Missing Environment Variables!")
+    print(f"BOT_TOKEN: {'✅ Set' if BOT_TOKEN else '❌ MISSING'}")
+    print(f"MONGO_URI: {'✅ Set' if MONGO_URI else '❌ MISSING'}")
+    print(f"OWNER_ID: {'✅ Set' if OWNER_ID != 0 else '❌ MISSING'}")
+    exit(1)
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -44,6 +52,10 @@ if not settings_col.find_one({"_id": "config"}):
             "alpha_30": {"name": "IOS - ALPHA PANEL", "days": 30, "price": 2240},
         }
     })
+
+# Ensure the Owner is always recognized in the DB
+if not admins_col.find_one({"user_id": OWNER_ID}):
+    admins_col.insert_one({"user_id": OWNER_ID, "role": "owner"})
 
 # --- UTILITIES ---
 def is_admin(user_id):
@@ -238,8 +250,9 @@ def callback_handler(call):
         except: pass
         
         for admin in admins_col.find():
-            try: bot.send_message(admin["user_id"], payment_msg, parse_mode="Markdown")
-            except: pass
+            if admin["user_id"] != OWNER_ID: # Prevent duplicate message to owner
+                try: bot.send_message(admin["user_id"], payment_msg, parse_mode="Markdown")
+                except: pass
 
     elif call.data == "main_menu":
         main_menu(chat_id, msg_id, call.from_user.first_name)
@@ -338,5 +351,5 @@ def process_price_change(message):
     except:
         bot.send_message(message.chat.id, "❌ Error. Format must be: `drip_1 150`", parse_mode="Markdown")
 
-print("Bot is running...")
+print("Bot is starting... Loading Environment Variables...")
 bot.infinity_polling(skip_pending=True)
