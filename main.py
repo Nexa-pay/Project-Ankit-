@@ -3,6 +3,7 @@ from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 import os
 import pymongo
 from datetime import datetime
+import uuid
 
 # --- CONFIGURATION ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -29,6 +30,9 @@ users_col = db["users"]
 admins_col = db["admins"]
 settings_col = db["settings"]
 logs_col = db["logs"]
+
+# In-memory dictionary to track payment steps
+pending_payments = {}
 
 # Initialize default settings
 if not settings_col.find_one({"_id": "config"}):
@@ -65,12 +69,10 @@ def check_force_join(user_id):
     except:
         return False
 
-# 🛠️ THE CRASH FIX: Safe Edit Function
 def safe_edit_text(text, chat_id, message_id, markup):
     try:
         bot.edit_message_text(text, chat_id, message_id, reply_markup=markup, parse_mode="Markdown")
-    except Exception as e:
-        # If it's a photo or identical message, delete and send fresh
+    except Exception:
         try: bot.delete_message(chat_id, message_id)
         except: pass
         bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
@@ -85,28 +87,24 @@ def send_welcome(message):
         bot.send_message(message.chat.id, "🛑 **Access Denied**\n\nYou must join our official channel to use this bot.", reply_markup=markup, parse_mode="Markdown")
         return
 
-    # User Registration
     user = users_col.find_one({"user_id": message.from_user.id})
     if not user:
         markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
         markup.add(KeyboardButton("📱 Share My Number", request_contact=True))
         bot.send_message(message.chat.id, "👋 **Welcome to PANEL STORE FREE FIRE!**\n\nTo continue, please share your phone number by tapping the button below.", reply_markup=markup, parse_mode="Markdown")
     else:
-        # Load Owner Bottom Menu if Owner
         if message.from_user.id == OWNER_ID:
             owner_markup = ReplyKeyboardMarkup(resize_keyboard=True)
             owner_markup.row(KeyboardButton("👑 Owner Panel"), KeyboardButton("🔗 Links & Prices"))
             bot.send_message(message.chat.id, "Welcome back, Boss! Loading admin tools...", reply_markup=owner_markup)
-            
         main_menu(message.chat.id, user_first_name=message.from_user.first_name)
 
 @bot.message_handler(content_types=['contact'])
 def handle_contact(message):
     if not users_col.find_one({"user_id": message.from_user.id}):
         join_date = datetime.now().strftime("%d %b %Y")
-        users_col.insert_one({"user_id": message.from_user.id, "phone": message.contact.phone_number, "date": join_date, "orders": []})
+        users_col.insert_one({"user_id": message.from_user.id, "phone": message.contact.phone_number, "date": join_date, "orders": [], "referrals": 0, "spins": 0})
     
-    # Remove the contact keyboard
     bot.send_message(message.chat.id, "✅ Number Verified Successfully!", reply_markup=telebot.types.ReplyKeyboardRemove())
     
     if message.from_user.id == OWNER_ID:
@@ -163,7 +161,6 @@ def callback_handler(call):
     msg_id = call.message.message_id
     config = settings_col.find_one({"_id": "config"}) or {}
 
-    # MAIN NAVIGATION
     if call.data == "check_join":
         if check_force_join(call.from_user.id):
             bot.delete_message(chat_id, msg_id)
@@ -184,7 +181,7 @@ def callback_handler(call):
             text += "You have no previous orders.\n\n"
         else:
             for i, o in enumerate(reversed(orders[-10:]), 1):
-                icon = "⏳" if o["status"] == "Pending" else "✅"
+                icon = "⏳" if o["status"] == "Pending" else ("✅" if "Approved" in o["status"] else "🚫")
                 text += f"{i}. {icon} **{o['name']}**\n   ⏱ {o['days']} Days • 💰 ₹{o['price']} • {o['status']}\n"
         
         text += "━━━━━━━━━━━━━━━━━━━━"
@@ -195,21 +192,35 @@ def callback_handler(call):
 
     elif call.data == "my_profile":
         user = users_col.find_one({"user_id": chat_id}) or {}
+        
+        # Profile Formatting Fix
         phone = user.get("phone", "Not Provided")
-        date = user.get("date", "Unknown")
+        date = user.get("date")
+        if not date or date == "Unknown":
+            date = datetime.now().strftime("%d %b %Y")
+            users_col.update_one({"user_id": chat_id}, {"$set": {"date": date}})
+            
         orders_count = len(user.get("orders", []))
-        ref_link = f"https://t.me/{bot.get_me().username}?start=ref_{chat_id}"
+        spins = user.get("spins", 0)
+        ref_count = user.get("referrals", 0)
+        
+        bot_username = bot.get_me().username
+        ref_link = f"https://t.me/{bot_username}?start=ref_{chat_id}"
         
         text = (
+            "━━━━━━━━━━━━━━━━━━━━\n"
             "👤 **YOUR PROFILE**\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
             f"📛 **Name:** {call.from_user.first_name}\n"
             f"🆔 **User ID:** `{chat_id}`\n"
-            f"📱 **Phone:** `{phone}`\n"
+            f"📱 **Phone:** `+{phone.replace('+', '')}`\n"
             f"📅 **Member Since:** {date}\n"
-            f"🛒 **Total Orders:** {orders_count}\n\n"
-            f"🔗 **Your Referral Link:**\n`{ref_link}`\n"
-            "_Share → friend buys → you earn rewards!_"
+            f"🛒 **Total Orders:** {orders_count}\n"
+            f"🎰 **Bonus Spins:** {spins} (from {ref_count}/2 referrals)\n\n"
+            f"🔗 **Your Referral Link:**\n"
+            f"`{ref_link}`\n"
+            "Share → friend buys → you earn rewards!\n"
+            "━━━━━━━━━━━━━━━━━━━━"
         )
         markup = InlineKeyboardMarkup()
         markup.row(InlineKeyboardButton("🛒 Shop Now", callback_data="shop_menu"), InlineKeyboardButton("📦 My Orders", callback_data="my_orders"))
@@ -217,7 +228,8 @@ def callback_handler(call):
         safe_edit_text(text, chat_id, msg_id, markup)
 
     elif call.data == "my_referral":
-        ref_link = f"https://t.me/{bot.get_me().username}?start=ref_{chat_id}"
+        bot_username = bot.get_me().username
+        ref_link = f"https://t.me/{bot_username}?start=ref_{chat_id}"
         text = (
             "🎁 **REFERRAL PROGRAM**\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -298,11 +310,10 @@ def callback_handler(call):
         markup.add(InlineKeyboardButton("⬅️ Back to Shop", callback_data="shop_ios"))
         safe_edit_text("🏷 **IOS - ALPHA PANEL**\n\nChoose a plan 👇", chat_id, msg_id, markup)
 
-    # --- CHECKOUT SYSTEM ---
+    # --- CHECKOUT & PAYMENT FLOW ---
     elif call.data.startswith("buy_"):
         prod_key = call.data.replace("buy_", "")
         p = config.get("products", {}).get(prod_key)
-        
         if not p: return bot.answer_callback_query(call.id, "Product not found!", show_alert=True)
             
         text = (
@@ -326,28 +337,51 @@ def callback_handler(call):
             with open("qr.jpg", "rb") as qr_img:
                 bot.send_photo(chat_id, qr_img, caption=text, reply_markup=markup, parse_mode="Markdown")
         except FileNotFoundError:
-            bot.send_message(chat_id, text + "\n\n*(Error: QR Image Missing! Upload qr.jpg to GitHub)*", reply_markup=markup, parse_mode="Markdown")
+            bot.send_message(chat_id, text + "\n\n*(Error: QR Image Missing! Upload qr.jpg)*", reply_markup=markup, parse_mode="Markdown")
 
     elif call.data.startswith("paid_"):
         prod_key = call.data.replace("paid_", "")
-        bot.answer_callback_query(call.id, "Verification sent to Admins!", show_alert=True)
+        pending_payments[chat_id] = {"prod_key": prod_key}
         
-        p = config.get("products", {}).get(prod_key)
-        if not p: return
+        bot.delete_message(chat_id, msg_id) # Delete QR code
+        msg = bot.send_message(chat_id, "✅ **Payment Initiated**\n\nPlease type your **UPI registered name** exactly as it appears in your payment app:\n\n_Example: RAHUL SHARMA_", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_upi_name)
+
+    # --- ADMIN ORDER APPROVAL ---
+    elif call.data.startswith("approve_") or call.data.startswith("reject_"):
+        if not (call.from_user.id == OWNER_ID or is_admin(call.from_user.id)):
+            return bot.answer_callback_query(call.id, "Unauthorized Access", show_alert=True)
+            
+        parts = call.data.split("_")
+        action = parts[0]
+        user_id = int(parts[1])
+        order_id = parts[2]
         
-        # Log to DB and append to user's "My Orders"
-        log_entry = f"User {call.from_user.id} claimed payment for {p['name']} (₹{p['price']})"
-        logs_col.insert_one({"log": log_entry}) 
+        user = users_col.find_one({"user_id": user_id})
+        if not user: return bot.answer_callback_query(call.id, "User not found.", show_alert=True)
         
-        new_order = {"name": p["name"], "days": p["days"], "price": p["price"], "status": "Pending"}
-        users_col.update_one({"user_id": chat_id}, {"$push": {"orders": new_order}})
+        target_order = next((o for o in user.get("orders", []) if o.get("order_id") == order_id), None)
         
-        payment_msg = f"🔔 **NEW PAYMENT ALERT**\nUser ID: `{call.from_user.id}`\nItem: {p['name']} ({p['days']}d)\nAmount: ₹{p['price']}"
-        try: bot.send_message(OWNER_ID, payment_msg, parse_mode="Markdown")
-        except: pass
+        if not target_order or target_order.get("status") != "Pending":
+            bot.answer_callback_query(call.id, "Order was already processed by another admin!", show_alert=True)
+            bot.edit_message_caption(f"{call.message.caption}\n\n🔒 **PROCESSED ALREADY**", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
+            return
+            
+        new_status = "Approved ✅" if action == "approve" else "Rejected ❌"
         
-        # Send user back to menu so they don't get stuck on the QR code
-        main_menu(chat_id, msg_id, call.from_user.first_name)
+        users_col.update_one(
+            {"user_id": user_id, "orders.order_id": order_id},
+            {"$set": {"orders.$.status": new_status}}
+        )
+        
+        admin_name = call.from_user.first_name
+        bot.edit_message_caption(f"{call.message.caption}\n\n**Status:** {new_status} (by {admin_name})", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
+        bot.answer_callback_query(call.id, f"Order {new_status}")
+        
+        if action == "approve":
+            bot.send_message(user_id, f"✅ **Payment Approved!**\n\nYour order for `{target_order['name']}` was verified successfully. The admin will DM your key shortly.", parse_mode="Markdown")
+        else:
+            bot.send_message(user_id, f"❌ **Payment Rejected!**\n\nYour order for `{target_order['name']}` could not be verified. Please contact support if you were charged.", parse_mode="Markdown")
 
     # --- ADMIN INLINE CALLBACKS ---
     elif call.data == "admin_stats":
@@ -385,7 +419,79 @@ def callback_handler(call):
         msg = bot.send_message(chat_id, text, parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_price_change)
 
-# --- STEP HANDLERS ---
+# --- MULTI-STEP PAYMENT FUNCTIONS ---
+def process_upi_name(message):
+    chat_id = message.chat.id
+    if chat_id not in pending_payments: return
+    
+    pending_payments[chat_id]["upi_name"] = message.text
+    msg = bot.send_message(chat_id, "📸 **Almost done!**\n\nPlease send the **Screenshot** of your successful payment now.", parse_mode="Markdown")
+    bot.register_next_step_handler(msg, process_payment_screenshot)
+
+def process_payment_screenshot(message):
+    chat_id = message.chat.id
+    if chat_id not in pending_payments: return
+    
+    if not message.photo:
+        msg = bot.send_message(chat_id, "❌ That is not a photo. Please send a valid screenshot.")
+        bot.register_next_step_handler(msg, process_payment_screenshot)
+        return
+        
+    payment_data = pending_payments.pop(chat_id)
+    prod_key = payment_data["prod_key"]
+    upi_name = payment_data["upi_name"]
+    photo_id = message.photo[-1].file_id
+    
+    config = settings_col.find_one({"_id": "config"})
+    p = config["products"][prod_key]
+    
+    # Generate unique 8 character Order ID
+    order_id = str(uuid.uuid4())[:8].upper()
+    
+    new_order = {
+        "order_id": order_id,
+        "name": p["name"],
+        "days": p["days"],
+        "price": p["price"],
+        "status": "Pending",
+        "upi_name": upi_name,
+        "date": datetime.now().strftime("%d %b %Y")
+    }
+    
+    users_col.update_one({"user_id": chat_id}, {"$push": {"orders": new_order}})
+    
+    bot.send_message(chat_id, "⏳ **Screenshot Received!**\n\nYour payment is currently being verified by admins. Please wait patiently.", parse_mode="Markdown")
+    
+    admin_caption = (
+        f"🔔 **NEW PAYMENT ALERT**\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👤 **User:** `{chat_id}` (@{message.from_user.username})\n"
+        f"📛 **UPI Name:** `{upi_name}`\n"
+        f"📦 **Item:** {p['name']} ({p['days']}d)\n"
+        f"💰 **Amount:** ₹{p['price']}\n"
+        f"🔖 **Order ID:** `{order_id}`\n"
+        f"━━━━━━━━━━━━━━━━━━"
+    )
+    
+    markup = InlineKeyboardMarkup()
+    markup.row(
+        InlineKeyboardButton("✅ Approve", callback_data=f"approve_{chat_id}_{order_id}"),
+        InlineKeyboardButton("❌ Reject", callback_data=f"reject_{chat_id}_{order_id}")
+    )
+    
+    # Forward to Owner
+    try: bot.send_photo(OWNER_ID, photo_id, caption=admin_caption, reply_markup=markup, parse_mode="Markdown")
+    except: pass
+    
+    # Forward to Admins
+    for admin in admins_col.find():
+        if admin["user_id"] != OWNER_ID:
+            try: bot.send_photo(admin["user_id"], photo_id, caption=admin_caption, reply_markup=markup, parse_mode="Markdown")
+            except: pass
+            
+    main_menu(chat_id, user_first_name=message.from_user.first_name)
+
+# --- ADMIN STEP HANDLERS ---
 def process_broadcast(message):
     bot.send_message(message.chat.id, "⏳ Broadcasting...")
     success = 0
