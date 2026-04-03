@@ -1,1 +1,2 @@
 pyTelegramBotAPI==4.15.4
+pymongo==4.6.2
