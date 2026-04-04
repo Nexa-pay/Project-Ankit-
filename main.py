@@ -104,11 +104,13 @@ def validate_url(url):
 
 # --- KEYBOARDS ---
 def user_main_keyboard(user_id):
+    # Places Panel Files and Admin Panel on the bottom menu
+    markup = ReplyKeyboardMarkup(resize_keyboard=True)
     if is_admin(user_id):
-        markup = ReplyKeyboardMarkup(resize_keyboard=True)
-        markup.add(KeyboardButton("⚙️ Admin Panel"))
-        return markup
-    return telebot.types.ReplyKeyboardRemove()
+        markup.row(KeyboardButton("📁 Panel Files"), KeyboardButton("⚙️ Admin Panel"))
+    else:
+        markup.add(KeyboardButton("📁 Panel Files"))
+    return markup
 
 def admin_main_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -181,28 +183,28 @@ def handle_contact(message):
 def main_menu(chat_id, message_id=None, user_first_name="User"):
     config = settings_col.find_one({"_id": "config"}) or {}
     pay_proof_link = validate_url(config.get("pay_proof_link"))
-    panel_files_link = validate_url(config.get("panel_files_link", "https://t.me/Nexapayz"))
     welcome_image = config.get("welcome_image", "")
     
-    welcome_template = config.get("welcome_msg") or default_welcome
-    text = welcome_template.replace("{name}", user_first_name)
+    # 🛡️ THE CRASH FIX: Safely fallback if database value is completely empty/None
+    welcome_template = config.get("welcome_msg")
+    if not welcome_template:
+        welcome_template = default_welcome
+        
+    text = str(welcome_template).replace("{name}", str(user_first_name))
     
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("🛒 Shop Now", callback_data="shop_menu"))
     markup.row(InlineKeyboardButton("📦 My Orders", callback_data="my_orders"), InlineKeyboardButton("👤 Profile", callback_data="my_profile"))
     markup.row(InlineKeyboardButton("↗️ Pay Proof", url=pay_proof_link), InlineKeyboardButton("❓ How to Use", callback_data="how_to_use"))
     markup.row(InlineKeyboardButton("💬 Support", callback_data="support_menu"), InlineKeyboardButton("🎁 Referral", callback_data="my_referral"))
-    markup.add(InlineKeyboardButton("📁 Panel Files", url=panel_files_link))
     
     if message_id: 
         safe_edit_text(text, chat_id, message_id, markup, image=welcome_image)
     else: 
-        if is_admin(chat_id):
-            bot.send_message(chat_id, "👑 **Admin Access Granted**", reply_markup=user_main_keyboard(chat_id), parse_mode="Markdown")
-        else:
-            m = bot.send_message(chat_id, "Loading store...", reply_markup=user_main_keyboard(chat_id))
-            try: bot.delete_message(chat_id, m.message_id)
-            except: pass
+        # Update the bottom keyboard smoothly
+        m = bot.send_message(chat_id, "Loading store...", reply_markup=user_main_keyboard(chat_id))
+        try: bot.delete_message(chat_id, m.message_id)
+        except: pass
             
         if welcome_image:
             try: bot.send_photo(chat_id, welcome_image, caption=text, reply_markup=markup, parse_mode="Markdown")
@@ -210,7 +212,16 @@ def main_menu(chat_id, message_id=None, user_first_name="User"):
         else:
             bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
 
-# --- ADMIN BOTTOM MENU ROUTER ---
+# --- BOTTOM MENU ROUTER ---
+@bot.message_handler(func=lambda message: message.text == "📁 Panel Files")
+def handle_panel_files(message):
+    config = settings_col.find_one({"_id": "config"}) or {}
+    panel_link = validate_url(config.get("panel_files_link", "https://t.me/Nexapayz"))
+    
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton("🔗 Open Panel Files", url=panel_link))
+    bot.send_message(message.chat.id, "📁 **Click the button below to access Panel Files:**", reply_markup=markup, parse_mode="Markdown")
+
 @bot.message_handler(func=lambda message: message.text == "⚙️ Admin Panel")
 def enter_admin_panel(message):
     if not is_admin(message.from_user.id): return
@@ -540,33 +551,6 @@ def callback_handler(call):
         else: 
             bot.send_message(user_id, f"❌ **Payment Rejected!**\n\nYour order for `{target_order.get('plan_name')}` could not be verified.", parse_mode="Markdown")
 
-    # --- ADMIN APPROVALS (DEPOSITS) ---
-    elif call.data.startswith("dep_approve_") or call.data.startswith("dep_reject_"):
-        if not is_admin(call.from_user.id): return
-        parts = call.data.split("_")
-        action, user_id, amount = parts[1], int(parts[2]), float(parts[3])
-        
-        bot.edit_message_caption(f"{call.message.caption}\n\n🔒 **PROCESSED** ({action.upper()})", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
-        bot.answer_callback_query(call.id, f"Deposit {action}")
-        
-        if action == "approve":
-            users_col.update_one({"user_id": user_id}, {"$inc": {"balance": amount}})
-            bot.send_message(user_id, f"✅ **Deposit Approved!**\n\n₹{amount} has been added to your wallet balance.")
-        else:
-            bot.send_message(user_id, f"❌ **Deposit Rejected!**\n\nYour request to add ₹{amount} was declined.")
-
-    # --- ADMIN USER MANAGEMENT CALLBACKS ---
-    elif call.data.startswith("addbal_"):
-        uid = int(call.data.split("_")[1])
-        bot.delete_message(chat_id, msg_id)
-        msg = bot.send_message(chat_id, "Enter amount to ADD to this user's balance:")
-        bot.register_next_step_handler(msg, lambda m: modify_balance(m, uid, True))
-    elif call.data.startswith("deductbal_"):
-        uid = int(call.data.split("_")[1])
-        bot.delete_message(chat_id, msg_id)
-        msg = bot.send_message(chat_id, "Enter amount to DEDUCT from this user's balance:")
-        bot.register_next_step_handler(msg, lambda m: modify_balance(m, uid, False))
-
     # --- ADMIN SETTINGS CALLBACKS ---
     elif call.data == "set_welcome":
         msg = bot.send_message(chat_id, "Send your new Welcome Message.\nUse `{name}` and `{prod_count}` for dynamic text.")
@@ -592,7 +576,7 @@ def callback_handler(call):
     elif call.data == "admin_remove":
         msg = bot.send_message(chat_id, "Send the Telegram User ID of the admin to REMOVE:")
         bot.register_next_step_handler(msg, process_remove_admin)
-        
+
     # --- ADVANCED ADMIN MANAGEMENT (KEYS, PROMOS, RESELLERS) ---
     elif call.data == "keys_add":
         plans = list(plans_col.find())
@@ -756,7 +740,6 @@ def process_panel_files_link(message):
     settings_col.update_one({"_id": "config"}, {"$set": {"panel_files_link": message.text.strip()}})
     bot.send_message(message.chat.id, "✅ Panel Files link updated successfully!")
 
-# 🚨 UPDATED BROADCAST FUNCTION TO HANDLE ALL MEDIA FORMATS PERFECTLY
 def process_broadcast(message):
     bot.send_message(message.chat.id, "⏳ Broadcasting...")
     success = 0
