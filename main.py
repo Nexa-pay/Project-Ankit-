@@ -31,7 +31,6 @@ admins_col = db["admins"]
 settings_col = db["settings"]
 logs_col = db["logs"]
 
-# In-memory dictionary to track payment steps
 pending_payments = {}
 
 # Initialize default settings
@@ -77,12 +76,18 @@ def safe_edit_text(text, chat_id, message_id, markup):
         except: pass
         bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
 
+# 🛡️ THE CRASH FIX: URL Validator
+def validate_url(url):
+    if not url or not url.startswith("http"):
+        return "https://t.me/Nexapayz"
+    return url
+
 # --- USER COMMANDS ---
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     if not check_force_join(message.from_user.id):
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{FORCE_JOIN_CHANNEL.replace('@', '')}"))
+        markup.add(InlineKeyboardButton("📢 Join Channel", url=validate_url(f"https://t.me/{FORCE_JOIN_CHANNEL.replace('@', '')}")))
         markup.add(InlineKeyboardButton("✅ I Have Joined", callback_data="check_join"))
         bot.send_message(message.chat.id, "🛑 **Access Denied**\n\nYou must join our official channel to use this bot.", reply_markup=markup, parse_mode="Markdown")
         return
@@ -93,10 +98,6 @@ def send_welcome(message):
         markup.add(KeyboardButton("📱 Share My Number", request_contact=True))
         bot.send_message(message.chat.id, "👋 **Welcome to PANEL STORE FREE FIRE!**\n\nTo continue, please share your phone number by tapping the button below.", reply_markup=markup, parse_mode="Markdown")
     else:
-        if message.from_user.id == OWNER_ID:
-            owner_markup = ReplyKeyboardMarkup(resize_keyboard=True)
-            owner_markup.row(KeyboardButton("👑 Owner Panel"), KeyboardButton("🔗 Links & Prices"))
-            bot.send_message(message.chat.id, "Welcome back, Boss! Loading admin tools...", reply_markup=owner_markup)
         main_menu(message.chat.id, user_first_name=message.from_user.first_name)
 
 @bot.message_handler(content_types=['contact'])
@@ -106,18 +107,14 @@ def handle_contact(message):
         users_col.insert_one({"user_id": message.from_user.id, "phone": message.contact.phone_number, "date": join_date, "orders": [], "referrals": 0, "spins": 0})
     
     bot.send_message(message.chat.id, "✅ Number Verified Successfully!", reply_markup=telebot.types.ReplyKeyboardRemove())
-    
-    if message.from_user.id == OWNER_ID:
-        owner_markup = ReplyKeyboardMarkup(resize_keyboard=True)
-        owner_markup.row(KeyboardButton("👑 Owner Panel"), KeyboardButton("🔗 Links & Prices"))
-        bot.send_message(message.chat.id, "Admin tools loaded.", reply_markup=owner_markup)
-
     main_menu(message.chat.id, user_first_name=message.from_user.first_name)
 
 def main_menu(chat_id, message_id=None, user_first_name="User"):
     config = settings_col.find_one({"_id": "config"}) or {}
-    support_link = config.get("support_link", "https://t.me/Nexapayz")
-    pay_proof_link = config.get("pay_proof_link", "https://t.me/Nexapayz")
+    
+    # Safely fetch and validate links
+    support_link = validate_url(config.get("support_link", "https://t.me/Nexapayz"))
+    pay_proof_link = validate_url(config.get("pay_proof_link", "https://t.me/Nexapayz"))
     
     text = (
         "🔥 ━━ **PANEL STORE FREE FIRE** ━━ 🔥\n"
@@ -139,6 +136,22 @@ def main_menu(chat_id, message_id=None, user_first_name="User"):
     
     if message_id: safe_edit_text(text, chat_id, message_id, markup)
     else: bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
+
+# --- ROLES & ADMIN PANEL ---
+@bot.message_handler(commands=['admin', 'owner'])
+def admin_panel(message):
+    user_id = message.from_user.id
+    if not (user_id == OWNER_ID or is_admin(user_id)):
+        return bot.reply_to(message, "❌ You do not have permission.")
+    
+    if user_id == OWNER_ID:
+        owner_markup = ReplyKeyboardMarkup(resize_keyboard=True)
+        owner_markup.row(KeyboardButton("👑 Owner Panel"), KeyboardButton("🔗 Links & Prices"))
+        bot.send_message(message.chat.id, "⚙️ Admin mode activated. Use the bottom menu.", reply_markup=owner_markup)
+    else:
+        markup = InlineKeyboardMarkup()
+        markup.row(InlineKeyboardButton("📊 Stats & Logs", callback_data="admin_stats"), InlineKeyboardButton("📣 Broadcast", callback_data="admin_broadcast"))
+        bot.send_message(message.chat.id, "👮 **Admin Panel** (Support Access)", reply_markup=markup, parse_mode="Markdown")
 
 # --- OWNER BOTTOM MENU HANDLERS ---
 @bot.message_handler(func=lambda message: message.text == "👑 Owner Panel" and message.from_user.id == OWNER_ID)
@@ -192,10 +205,9 @@ def callback_handler(call):
 
     elif call.data == "my_profile":
         user = users_col.find_one({"user_id": chat_id}) or {}
-        
-        # Profile Formatting Fix
         phone = user.get("phone", "Not Provided")
         date = user.get("date")
+        
         if not date or date == "Unknown":
             date = datetime.now().strftime("%d %b %Y")
             users_col.update_one({"user_id": chat_id}, {"$set": {"date": date}})
@@ -247,7 +259,7 @@ def callback_handler(call):
         safe_edit_text(text, chat_id, msg_id, markup)
         
     elif call.data == "how_to_use":
-        tutorial = config.get("tutorial_link", "https://youtube.com")
+        tutorial = validate_url(config.get("tutorial_link", "https://youtube.com"))
         text = (
             "📖 **How to Buy — Panel Store Free Fire**\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -343,7 +355,7 @@ def callback_handler(call):
         prod_key = call.data.replace("paid_", "")
         pending_payments[chat_id] = {"prod_key": prod_key}
         
-        bot.delete_message(chat_id, msg_id) # Delete QR code
+        bot.delete_message(chat_id, msg_id) 
         msg = bot.send_message(chat_id, "✅ **Payment Initiated**\n\nPlease type your **UPI registered name** exactly as it appears in your payment app:\n\n_Example: RAHUL SHARMA_", parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_upi_name)
 
@@ -367,7 +379,7 @@ def callback_handler(call):
             bot.edit_message_caption(f"{call.message.caption}\n\n🔒 **PROCESSED ALREADY**", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
             return
             
-        new_status = "Approved ✅" if action == "approve" else "Rejected ❌"
+        new_status = "Approved ✅" if action == "approve" else "Cancelled 🚫"
         
         users_col.update_one(
             {"user_id": user_id, "orders.order_id": order_id},
@@ -445,7 +457,6 @@ def process_payment_screenshot(message):
     config = settings_col.find_one({"_id": "config"})
     p = config["products"][prod_key]
     
-    # Generate unique 8 character Order ID
     order_id = str(uuid.uuid4())[:8].upper()
     
     new_order = {
@@ -479,11 +490,9 @@ def process_payment_screenshot(message):
         InlineKeyboardButton("❌ Reject", callback_data=f"reject_{chat_id}_{order_id}")
     )
     
-    # Forward to Owner
     try: bot.send_photo(OWNER_ID, photo_id, caption=admin_caption, reply_markup=markup, parse_mode="Markdown")
     except: pass
     
-    # Forward to Admins
     for admin in admins_col.find():
         if admin["user_id"] != OWNER_ID:
             try: bot.send_photo(admin["user_id"], photo_id, caption=admin_caption, reply_markup=markup, parse_mode="Markdown")
@@ -508,7 +517,7 @@ def process_links(message):
         settings_col.update_one({"_id": "config"}, {"$set": {"support_link": sup, "pay_proof_link": prf, "tutorial_link": tut}})
         bot.send_message(message.chat.id, "✅ Links updated successfully!")
     except:
-        bot.send_message(message.chat.id, "❌ Error. Make sure you send exactly 3 links separated by spaces.")
+        bot.send_message(message.chat.id, "❌ Error. Make sure you send exactly 3 valid links starting with http separated by spaces.")
 
 def process_add_admin(message):
     try:
