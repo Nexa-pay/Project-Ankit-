@@ -54,6 +54,7 @@ if not settings_col.find_one({"_id": "config"}):
     settings_col.insert_one({
         "_id": "config",
         "welcome_msg": default_welcome,
+        "welcome_image": "", # Stores the File ID of your banner
         "upi_id": "your_upi_id@okhdfcbank",
         "whatsapp_num": "+919876543210",
         "min_deposit": 100,
@@ -79,13 +80,21 @@ def check_force_join(user_id):
     except:
         return False
 
-def safe_edit_text(text, chat_id, message_id, markup):
+def safe_edit_text(text, chat_id, message_id, markup, image=None):
     try:
-        bot.edit_message_text(text, chat_id, message_id, reply_markup=markup, parse_mode="Markdown")
+        if image:
+            bot.edit_message_caption(caption=text, chat_id=chat_id, message_id=message_id, reply_markup=markup, parse_mode="Markdown")
+        else:
+            bot.edit_message_text(text=text, chat_id=chat_id, message_id=message_id, reply_markup=markup, parse_mode="Markdown")
     except Exception:
         try: bot.delete_message(chat_id, message_id)
         except: pass
-        bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
+        
+        if image:
+            try: bot.send_photo(chat_id, image, caption=text, reply_markup=markup, parse_mode="Markdown")
+            except: bot.send_message(chat_id, text + "\n\n*(Error loading banner image)*", reply_markup=markup, parse_mode="Markdown")
+        else:
+            bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
 
 def validate_url(url):
     if not url or not str(url).startswith("http"):
@@ -94,7 +103,6 @@ def validate_url(url):
 
 # --- KEYBOARDS ---
 def user_main_keyboard(user_id):
-    # Removes all bottom buttons EXCEPT Admin Panel for authorized users
     if is_admin(user_id):
         markup = ReplyKeyboardMarkup(resize_keyboard=True)
         markup.add(KeyboardButton("⚙️ Admin Panel"))
@@ -152,8 +160,10 @@ def handle_contact(message):
 def main_menu(chat_id, message_id=None, user_first_name="User"):
     config = settings_col.find_one({"_id": "config"}) or {}
     pay_proof_link = validate_url(config.get("pay_proof_link"))
+    welcome_image = config.get("welcome_image", "")
     
-    welcome_template = config.get("welcome_msg", default_welcome)
+    # 🛡️ Crash Fix: Ensure welcome_template is never None
+    welcome_template = config.get("welcome_msg") or default_welcome
     text = welcome_template.replace("{name}", user_first_name)
     
     markup = InlineKeyboardMarkup()
@@ -163,15 +173,20 @@ def main_menu(chat_id, message_id=None, user_first_name="User"):
     markup.row(InlineKeyboardButton("💬 Support", callback_data="support_menu"), InlineKeyboardButton("🎁 Referral", callback_data="my_referral"))
     
     if message_id: 
-        safe_edit_text(text, chat_id, message_id, markup)
+        safe_edit_text(text, chat_id, message_id, markup, image=welcome_image)
     else: 
         if is_admin(chat_id):
             bot.send_message(chat_id, "👑 **Admin Access Granted**", reply_markup=user_main_keyboard(chat_id), parse_mode="Markdown")
         else:
             m = bot.send_message(chat_id, "Loading store...", reply_markup=user_main_keyboard(chat_id))
-            bot.delete_message(chat_id, m.message_id)
+            try: bot.delete_message(chat_id, m.message_id)
+            except: pass
             
-        bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
+        if welcome_image:
+            try: bot.send_photo(chat_id, welcome_image, caption=text, reply_markup=markup, parse_mode="Markdown")
+            except: bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
+        else:
+            bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
 
 # --- ADMIN BOTTOM MENU ROUTER ---
 @bot.message_handler(func=lambda message: message.text == "⚙️ Admin Panel")
@@ -246,12 +261,11 @@ def admin_menu_handler(message):
             "⚙️ **SETTINGS**\n\n"
             f"**UPI ID:** `{config.get('upi_id')}`\n"
             f"**WhatsApp:** `{config.get('whatsapp_num', 'None')}`\n"
-            f"**Welcome Msg:** `{config.get('welcome_msg', '')[:20]}...`\n"
+            f"**Welcome Msg:** `{str(config.get('welcome_msg', ''))[:20]}...`\n"
         )
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("📝 Edit Welcome Msg", callback_data="set_welcome"))
-        markup.add(InlineKeyboardButton("💳 Set UPI ID", callback_data="set_upi"))
-        markup.add(InlineKeyboardButton("📱 Set WhatsApp Number", callback_data="set_whatsapp"))
+        markup.row(InlineKeyboardButton("📝 Edit Welcome Msg", callback_data="set_welcome"), InlineKeyboardButton("🖼 Set Welcome Image", callback_data="set_welcome_img"))
+        markup.row(InlineKeyboardButton("💳 Set UPI ID", callback_data="set_upi"), InlineKeyboardButton("📱 Set WhatsApp", callback_data="set_whatsapp"))
         markup.add(InlineKeyboardButton("🔗 Change Links", callback_data="admin_links"))
         markup.row(InlineKeyboardButton("👥 Add Admin", callback_data="admin_add"), InlineKeyboardButton("🚫 Remove Admin", callback_data="admin_remove"))
         bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
@@ -470,6 +484,63 @@ def callback_handler(call):
         plans_col.delete_one({"_id": pid})
         safe_edit_text("✅ Plan deleted.", chat_id, msg_id, None)
 
+    # --- ADMIN APPROVALS (ORDERS WITH AUTO-DELIVERY) ---
+    elif call.data.startswith("approve_") or call.data.startswith("reject_"):
+        if not is_admin(call.from_user.id): return bot.answer_callback_query(call.id, "Unauthorized", show_alert=True)
+        parts = call.data.split("_")
+        action, user_id, order_id = parts[0], int(parts[1]), parts[2]
+        
+        user = users_col.find_one({"user_id": user_id})
+        target_order = next((o for o in user.get("orders", []) if o.get("order_id") == order_id), None) if user else None
+        if not target_order or target_order.get("status") != "Pending Verification":
+            bot.answer_callback_query(call.id, "Already processed!", show_alert=True)
+            bot.edit_message_caption(f"{call.message.caption}\n\n🔒 **PROCESSED**", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
+            return
+            
+        new_status = "Approved ✅" if action == "approve" else "Cancelled 🚫"
+        users_col.update_one({"user_id": user_id, "orders.order_id": order_id}, {"$set": {"orders.$.status": new_status}})
+        bot.edit_message_caption(f"{call.message.caption}\n\n**Status:** {new_status} (by {call.from_user.first_name})", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
+        bot.answer_callback_query(call.id, f"Order {new_status}")
+        
+        if action == "approve":
+            plan_name = target_order.get('plan_name')
+            plan = plans_col.find_one({"name": plan_name})
+            
+            key_val = None
+            if plan:
+                key_doc = keys_col.find_one_and_delete({"plan_id": plan["_id"]})
+                if key_doc: key_val = key_doc["key"]
+                
+            if key_val:
+                bot.send_message(user_id, f"✅ **Payment Approved!**\n\nYour order for `{plan_name}` was verified successfully.\n\n🔑 **Your Panel Key:**\n`{key_val}`\n\nEnjoy!", parse_mode="Markdown")
+            else:
+                bot.send_message(user_id, f"✅ **Payment Approved!**\n\nYour order for `{plan_name}` was verified. The admin will DM your key shortly.", parse_mode="Markdown")
+        else: 
+            bot.send_message(user_id, f"❌ **Payment Rejected!**\n\nYour order for `{target_order.get('plan_name')}` could not be verified.", parse_mode="Markdown")
+
+    # --- ADMIN SETTINGS CALLBACKS ---
+    elif call.data == "set_welcome":
+        msg = bot.send_message(chat_id, "Send your new Welcome Message.\nUse `{name}` and `{prod_count}` for dynamic text.")
+        bot.register_next_step_handler(msg, lambda m: settings_col.update_one({"_id": "config"}, {"$set": {"welcome_msg": m.text}}))
+    elif call.data == "set_welcome_img":
+        msg = bot.send_message(chat_id, "Send the image/photo you want to use for the Welcome Screen.\n\nType `NONE` to remove the current image.")
+        bot.register_next_step_handler(msg, process_welcome_img)
+    elif call.data == "set_upi":
+        msg = bot.send_message(chat_id, "Send your exact UPI ID:")
+        bot.register_next_step_handler(msg, lambda m: settings_col.update_one({"_id": "config"}, {"$set": {"upi_id": m.text.strip()}}))
+    elif call.data == "set_whatsapp":
+        msg = bot.send_message(chat_id, "Send your WhatsApp Number (with country code, e.g., +919876543210):")
+        bot.register_next_step_handler(msg, process_whatsapp)
+    elif call.data == "admin_links":
+        msg = bot.send_message(chat_id, "Send new links separated by a space:\n`Support Proof Tutorial`\nExample:\n`https://t.me/sup https://t.me/prf https://youtu.be/x`", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_links)
+    elif call.data == "admin_add":
+        msg = bot.send_message(chat_id, "Send the Telegram User ID of the new admin:")
+        bot.register_next_step_handler(msg, process_add_admin)
+    elif call.data == "admin_remove":
+        msg = bot.send_message(chat_id, "Send the Telegram User ID of the admin to REMOVE:")
+        bot.register_next_step_handler(msg, process_remove_admin)
+
     # --- ADVANCED ADMIN MANAGEMENT (KEYS, PROMOS, RESELLERS) ---
     elif call.data == "keys_add":
         plans = list(plans_col.find())
@@ -532,60 +603,6 @@ def callback_handler(call):
         admins_col.delete_one({"user_id": uid, "role": "reseller"})
         safe_edit_text("✅ Reseller removed.", chat_id, msg_id, None)
 
-    # --- ADMIN APPROVALS (ORDERS WITH AUTO-DELIVERY) ---
-    elif call.data.startswith("approve_") or call.data.startswith("reject_"):
-        if not is_admin(call.from_user.id): return bot.answer_callback_query(call.id, "Unauthorized", show_alert=True)
-        parts = call.data.split("_")
-        action, user_id, order_id = parts[0], int(parts[1]), parts[2]
-        
-        user = users_col.find_one({"user_id": user_id})
-        target_order = next((o for o in user.get("orders", []) if o.get("order_id") == order_id), None) if user else None
-        if not target_order or target_order.get("status") != "Pending Verification":
-            bot.answer_callback_query(call.id, "Already processed!", show_alert=True)
-            bot.edit_message_caption(f"{call.message.caption}\n\n🔒 **PROCESSED**", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
-            return
-            
-        new_status = "Approved ✅" if action == "approve" else "Cancelled 🚫"
-        users_col.update_one({"user_id": user_id, "orders.order_id": order_id}, {"$set": {"orders.$.status": new_status}})
-        bot.edit_message_caption(f"{call.message.caption}\n\n**Status:** {new_status} (by {call.from_user.first_name})", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
-        bot.answer_callback_query(call.id, f"Order {new_status}")
-        
-        if action == "approve":
-            plan_name = target_order.get('plan_name')
-            plan = plans_col.find_one({"name": plan_name})
-            
-            key_val = None
-            if plan:
-                key_doc = keys_col.find_one_and_delete({"plan_id": plan["_id"]})
-                if key_doc: key_val = key_doc["key"]
-                
-            if key_val:
-                bot.send_message(user_id, f"✅ **Payment Approved!**\n\nYour order for `{plan_name}` was verified successfully.\n\n🔑 **Your Panel Key:**\n`{key_val}`\n\nEnjoy!", parse_mode="Markdown")
-            else:
-                bot.send_message(user_id, f"✅ **Payment Approved!**\n\nYour order for `{plan_name}` was verified. The admin will DM your key shortly.", parse_mode="Markdown")
-        else: 
-            bot.send_message(user_id, f"❌ **Payment Rejected!**\n\nYour order for `{target_order.get('plan_name')}` could not be verified.", parse_mode="Markdown")
-
-    # --- ADMIN SETTINGS CALLBACKS ---
-    elif call.data == "set_welcome":
-        msg = bot.send_message(chat_id, "Send your new Welcome Message.\nUse `{name}` and `{prod_count}` for dynamic text.")
-        bot.register_next_step_handler(msg, lambda m: settings_col.update_one({"_id": "config"}, {"$set": {"welcome_msg": m.text}}))
-    elif call.data == "set_upi":
-        msg = bot.send_message(chat_id, "Send your exact UPI ID:")
-        bot.register_next_step_handler(msg, lambda m: settings_col.update_one({"_id": "config"}, {"$set": {"upi_id": m.text.strip()}}))
-    elif call.data == "set_whatsapp":
-        msg = bot.send_message(chat_id, "Send your WhatsApp Number (with country code, e.g., +919876543210):")
-        bot.register_next_step_handler(msg, process_whatsapp)
-    elif call.data == "admin_links":
-        msg = bot.send_message(chat_id, "Send new links separated by a space:\n`Support Proof Tutorial`\nExample:\n`https://t.me/sup https://t.me/prf https://youtu.be/x`", parse_mode="Markdown")
-        bot.register_next_step_handler(msg, process_links)
-    elif call.data == "admin_add":
-        msg = bot.send_message(chat_id, "Send the Telegram User ID of the new admin:")
-        bot.register_next_step_handler(msg, process_add_admin)
-    elif call.data == "admin_remove":
-        msg = bot.send_message(chat_id, "Send the Telegram User ID of the admin to REMOVE:")
-        bot.register_next_step_handler(msg, process_remove_admin)
-
 # --- CREATION STEP HANDLERS ---
 def step_prod_name(message):
     pending_inputs[message.chat.id] = {"name": message.text}
@@ -633,6 +650,17 @@ def step_plan_price(message, prod_id):
         bot.send_message(message.chat.id, "❌ Price must be a valid number. Cancelled.")
 
 # --- ADMIN UTILITY HANDLERS ---
+def process_welcome_img(message):
+    if message.text and message.text.strip().upper() == "NONE":
+        settings_col.update_one({"_id": "config"}, {"$set": {"welcome_image": ""}})
+        bot.send_message(message.chat.id, "✅ Welcome image removed.")
+    elif message.photo:
+        file_id = message.photo[-1].file_id
+        settings_col.update_one({"_id": "config"}, {"$set": {"welcome_image": file_id}})
+        bot.send_message(message.chat.id, "✅ Welcome image updated successfully!")
+    else:
+        bot.send_message(message.chat.id, "❌ Error. Please send a valid photo.")
+
 def process_whatsapp(message):
     settings_col.update_one({"_id": "config"}, {"$set": {"whatsapp_num": message.text.strip()}})
     bot.send_message(message.chat.id, "✅ WhatsApp number updated!")
