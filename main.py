@@ -56,6 +56,8 @@ if not settings_col.find_one({"_id": "config"}):
         "welcome_msg": default_welcome,
         "upi_id": "your_upi_id@okhdfcbank",
         "whatsapp_num": "+919876543210",
+        "min_deposit": 100,
+        "max_deposit": 5000,
         "support_link": "https://t.me/Nexapayz",
         "pay_proof_link": "https://t.me/Nexapayz",
         "tutorial_link": "https://youtube.com"
@@ -92,7 +94,7 @@ def validate_url(url):
 
 # --- KEYBOARDS ---
 def user_main_keyboard(user_id):
-    # Keep Only Admin Panel for Admins, hide everything for normal users
+    # Removes all bottom buttons EXCEPT Admin Panel for authorized users
     if is_admin(user_id):
         markup = ReplyKeyboardMarkup(resize_keyboard=True)
         markup.add(KeyboardButton("⚙️ Admin Panel"))
@@ -468,41 +470,6 @@ def callback_handler(call):
         plans_col.delete_one({"_id": pid})
         safe_edit_text("✅ Plan deleted.", chat_id, msg_id, None)
 
-    # --- ADMIN APPROVALS (ORDERS) WITH AUTO DELIVERY ---
-    elif call.data.startswith("approve_") or call.data.startswith("reject_"):
-        if not is_admin(call.from_user.id): return bot.answer_callback_query(call.id, "Unauthorized", show_alert=True)
-        parts = call.data.split("_")
-        action, user_id, order_id = parts[0], int(parts[1]), parts[2]
-        
-        user = users_col.find_one({"user_id": user_id})
-        target_order = next((o for o in user.get("orders", []) if o.get("order_id") == order_id), None) if user else None
-        if not target_order or target_order.get("status") != "Pending Verification":
-            bot.answer_callback_query(call.id, "Already processed!", show_alert=True)
-            bot.edit_message_caption(f"{call.message.caption}\n\n🔒 **PROCESSED**", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
-            return
-            
-        new_status = "Approved ✅" if action == "approve" else "Cancelled 🚫"
-        users_col.update_one({"user_id": user_id, "orders.order_id": order_id}, {"$set": {"orders.$.status": new_status}})
-        bot.edit_message_caption(f"{call.message.caption}\n\n**Status:** {new_status} (by {call.from_user.first_name})", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
-        bot.answer_callback_query(call.id, f"Order {new_status}")
-        
-        if action == "approve": 
-            plan_name = target_order.get('plan_name')
-            plan = plans_col.find_one({"name": plan_name})
-            
-            # Fetch a key if available
-            key_val = None
-            if plan:
-                key_doc = keys_col.find_one_and_delete({"plan_id": plan["_id"]})
-                if key_doc: key_val = key_doc["key"]
-                
-            if key_val:
-                bot.send_message(user_id, f"✅ **Payment Approved!**\n\nYour order for `{plan_name}` was verified.\n\n🔑 **Your Panel Key:**\n`{key_val}`\n\nEnjoy!", parse_mode="Markdown")
-            else:
-                bot.send_message(user_id, f"✅ **Payment Approved!**\n\nYour order for `{plan_name}` was verified. The admin will DM your key shortly (Auto-delivery empty).", parse_mode="Markdown")
-        else: 
-            bot.send_message(user_id, f"❌ **Payment Rejected!**\n\nYour order for `{target_order.get('plan_name')}` could not be verified.", parse_mode="Markdown")
-
     # --- ADVANCED ADMIN MANAGEMENT (KEYS, PROMOS, RESELLERS) ---
     elif call.data == "keys_add":
         plans = list(plans_col.find())
@@ -565,6 +532,60 @@ def callback_handler(call):
         admins_col.delete_one({"user_id": uid, "role": "reseller"})
         safe_edit_text("✅ Reseller removed.", chat_id, msg_id, None)
 
+    # --- ADMIN APPROVALS (ORDERS WITH AUTO-DELIVERY) ---
+    elif call.data.startswith("approve_") or call.data.startswith("reject_"):
+        if not is_admin(call.from_user.id): return bot.answer_callback_query(call.id, "Unauthorized", show_alert=True)
+        parts = call.data.split("_")
+        action, user_id, order_id = parts[0], int(parts[1]), parts[2]
+        
+        user = users_col.find_one({"user_id": user_id})
+        target_order = next((o for o in user.get("orders", []) if o.get("order_id") == order_id), None) if user else None
+        if not target_order or target_order.get("status") != "Pending Verification":
+            bot.answer_callback_query(call.id, "Already processed!", show_alert=True)
+            bot.edit_message_caption(f"{call.message.caption}\n\n🔒 **PROCESSED**", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
+            return
+            
+        new_status = "Approved ✅" if action == "approve" else "Cancelled 🚫"
+        users_col.update_one({"user_id": user_id, "orders.order_id": order_id}, {"$set": {"orders.$.status": new_status}})
+        bot.edit_message_caption(f"{call.message.caption}\n\n**Status:** {new_status} (by {call.from_user.first_name})", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
+        bot.answer_callback_query(call.id, f"Order {new_status}")
+        
+        if action == "approve":
+            plan_name = target_order.get('plan_name')
+            plan = plans_col.find_one({"name": plan_name})
+            
+            key_val = None
+            if plan:
+                key_doc = keys_col.find_one_and_delete({"plan_id": plan["_id"]})
+                if key_doc: key_val = key_doc["key"]
+                
+            if key_val:
+                bot.send_message(user_id, f"✅ **Payment Approved!**\n\nYour order for `{plan_name}` was verified successfully.\n\n🔑 **Your Panel Key:**\n`{key_val}`\n\nEnjoy!", parse_mode="Markdown")
+            else:
+                bot.send_message(user_id, f"✅ **Payment Approved!**\n\nYour order for `{plan_name}` was verified. The admin will DM your key shortly.", parse_mode="Markdown")
+        else: 
+            bot.send_message(user_id, f"❌ **Payment Rejected!**\n\nYour order for `{target_order.get('plan_name')}` could not be verified.", parse_mode="Markdown")
+
+    # --- ADMIN SETTINGS CALLBACKS ---
+    elif call.data == "set_welcome":
+        msg = bot.send_message(chat_id, "Send your new Welcome Message.\nUse `{name}` and `{prod_count}` for dynamic text.")
+        bot.register_next_step_handler(msg, lambda m: settings_col.update_one({"_id": "config"}, {"$set": {"welcome_msg": m.text}}))
+    elif call.data == "set_upi":
+        msg = bot.send_message(chat_id, "Send your exact UPI ID:")
+        bot.register_next_step_handler(msg, lambda m: settings_col.update_one({"_id": "config"}, {"$set": {"upi_id": m.text.strip()}}))
+    elif call.data == "set_whatsapp":
+        msg = bot.send_message(chat_id, "Send your WhatsApp Number (with country code, e.g., +919876543210):")
+        bot.register_next_step_handler(msg, process_whatsapp)
+    elif call.data == "admin_links":
+        msg = bot.send_message(chat_id, "Send new links separated by a space:\n`Support Proof Tutorial`\nExample:\n`https://t.me/sup https://t.me/prf https://youtu.be/x`", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_links)
+    elif call.data == "admin_add":
+        msg = bot.send_message(chat_id, "Send the Telegram User ID of the new admin:")
+        bot.register_next_step_handler(msg, process_add_admin)
+    elif call.data == "admin_remove":
+        msg = bot.send_message(chat_id, "Send the Telegram User ID of the admin to REMOVE:")
+        bot.register_next_step_handler(msg, process_remove_admin)
+
 # --- CREATION STEP HANDLERS ---
 def step_prod_name(message):
     pending_inputs[message.chat.id] = {"name": message.text}
@@ -611,8 +632,14 @@ def step_plan_price(message, prod_id):
     except:
         bot.send_message(message.chat.id, "❌ Price must be a valid number. Cancelled.")
 
+# --- ADMIN UTILITY HANDLERS ---
+def process_whatsapp(message):
+    settings_col.update_one({"_id": "config"}, {"$set": {"whatsapp_num": message.text.strip()}})
+    bot.send_message(message.chat.id, "✅ WhatsApp number updated!")
+
 def step_add_keys(message, plan_id):
     keys = [k.strip() for k in message.text.split(",") if k.strip()]
+    if not keys: return bot.send_message(message.chat.id, "❌ No valid keys found.")
     for k in keys: keys_col.insert_one({"plan_id": plan_id, "key": k})
     bot.send_message(message.chat.id, f"✅ Successfully added {len(keys)} keys to the database.")
 
@@ -637,7 +664,6 @@ def step_reseller_add(message):
         bot.send_message(message.chat.id, f"✅ User {uid} is now a Reseller.")
     except: bot.send_message(message.chat.id, "❌ Invalid ID.")
 
-# --- ADMIN UTILITY HANDLERS ---
 def process_links(message):
     try:
         sup, prf, tut = message.text.split()
@@ -655,6 +681,20 @@ def process_broadcast(message):
             success += 1
         except: pass
     bot.send_message(message.chat.id, f"✅ Broadcast sent to {success} users.")
+
+def process_add_admin(message):
+    try:
+        new_admin = int(message.text)
+        if not admins_col.find_one({"user_id": new_admin}): admins_col.insert_one({"user_id": new_admin})
+        bot.send_message(message.chat.id, f"✅ User {new_admin} is now an admin.")
+    except: bot.send_message(message.chat.id, "❌ Invalid ID.")
+
+def process_remove_admin(message):
+    try:
+        remove_id = int(message.text)
+        admins_col.delete_one({"user_id": remove_id})
+        bot.send_message(message.chat.id, f"✅ Admin {remove_id} removed.")
+    except: bot.send_message(message.chat.id, "❌ Invalid ID.")
 
 def step_manage_user(message):
     try:
