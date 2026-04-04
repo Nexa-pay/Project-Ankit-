@@ -81,31 +81,21 @@ def check_force_join(user_id):
     except:
         return False
 
-def escape_md(text):
-    if not text: return "User"
-    return str(text).replace("*", "").replace("_", "").replace("`", "").replace("[", "")
-
 def safe_edit_text(text, chat_id, message_id, markup, image=None):
     try:
         if image:
             bot.edit_message_caption(caption=text, chat_id=chat_id, message_id=message_id, reply_markup=markup, parse_mode="Markdown")
         else:
             bot.edit_message_text(text=text, chat_id=chat_id, message_id=message_id, reply_markup=markup, parse_mode="Markdown")
-    except Exception as e:
-        if "not modified" in str(e).lower() or "exactly the same" in str(e).lower():
-            return
-            
+    except Exception:
         try: bot.delete_message(chat_id, message_id)
         except: pass
         
         if image:
             try: bot.send_photo(chat_id, image, caption=text, reply_markup=markup, parse_mode="Markdown")
-            except Exception: 
-                try: bot.send_photo(chat_id, image, caption=text, reply_markup=markup) 
-                except: bot.send_message(chat_id, text, reply_markup=markup) 
+            except: bot.send_message(chat_id, text + "\n\n*(Error loading banner image)*", reply_markup=markup, parse_mode="Markdown")
         else:
-            try: bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
-            except Exception: bot.send_message(chat_id, text, reply_markup=markup) 
+            bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
 
 def validate_url(url):
     if not url or not str(url).startswith("http"):
@@ -114,12 +104,11 @@ def validate_url(url):
 
 # --- KEYBOARDS ---
 def user_main_keyboard(user_id):
-    markup = ReplyKeyboardMarkup(resize_keyboard=True)
     if is_admin(user_id):
-        markup.row(KeyboardButton("📁 Panel Files"), KeyboardButton("⚙️ Admin Panel"))
-    else:
-        markup.add(KeyboardButton("📁 Panel Files"))
-    return markup
+        markup = ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add(KeyboardButton("⚙️ Admin Panel"))
+        return markup
+    return telebot.types.ReplyKeyboardRemove()
 
 def admin_main_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -137,15 +126,14 @@ def admin_main_keyboard():
 def send_welcome(message):
     chat_id = message.chat.id
     
+    # 🔔 NOTIFY ONLY OWNER AND TRUE ADMINS WHEN SOMEONE STARTS THE BOT
     try:
-        safe_name = escape_md(message.from_user.first_name)
-        safe_username = escape_md(message.from_user.username or 'None')
         admin_notification = (
             f"🔔 **USER STARTED THE BOT**\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"👤 **Name:** {safe_name}\n"
+            f"👤 **Name:** {message.from_user.first_name}\n"
             f"🆔 **ID:** `{message.from_user.id}`\n"
-            f"🔗 **Username:** @{safe_username}\n"
+            f"🔗 **Username:** @{message.from_user.username or 'None'}\n"
             f"━━━━━━━━━━━━━━━━━━"
         )
         try: bot.send_message(OWNER_ID, admin_notification, parse_mode="Markdown")
@@ -193,49 +181,36 @@ def handle_contact(message):
 def main_menu(chat_id, message_id=None, user_first_name="User"):
     config = settings_col.find_one({"_id": "config"}) or {}
     pay_proof_link = validate_url(config.get("pay_proof_link"))
+    panel_files_link = validate_url(config.get("panel_files_link", "https://t.me/Nexapayz"))
     welcome_image = config.get("welcome_image", "")
     
-    welcome_template = config.get("welcome_msg")
-    if not welcome_template:
-        welcome_template = default_welcome
-        
-    safe_name = escape_md(user_first_name)
-    text = str(welcome_template).replace("{name}", safe_name)
+    welcome_template = config.get("welcome_msg") or default_welcome
+    text = welcome_template.replace("{name}", user_first_name)
     
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("🛒 Shop Now", callback_data="shop_menu"))
     markup.row(InlineKeyboardButton("📦 My Orders", callback_data="my_orders"), InlineKeyboardButton("👤 Profile", callback_data="my_profile"))
     markup.row(InlineKeyboardButton("↗️ Pay Proof", url=pay_proof_link), InlineKeyboardButton("❓ How to Use", callback_data="how_to_use"))
     markup.row(InlineKeyboardButton("💬 Support", callback_data="support_menu"), InlineKeyboardButton("🎁 Referral", callback_data="my_referral"))
+    markup.add(InlineKeyboardButton("📁 Panel Files", url=panel_files_link))
     
     if message_id: 
         safe_edit_text(text, chat_id, message_id, markup, image=welcome_image)
     else: 
-        # 🛑 THE FIX: Sends a permanent message to hold the bottom keyboard so it never disappears
         if is_admin(chat_id):
-            bot.send_message(chat_id, "👑 **Admin Access Verified**", reply_markup=user_main_keyboard(chat_id), parse_mode="Markdown")
+            bot.send_message(chat_id, "👑 **Admin Access Granted**", reply_markup=user_main_keyboard(chat_id), parse_mode="Markdown")
         else:
-            bot.send_message(chat_id, "✅ **Store Updated**", reply_markup=user_main_keyboard(chat_id), parse_mode="Markdown")
+            m = bot.send_message(chat_id, "Loading store...", reply_markup=user_main_keyboard(chat_id))
+            try: bot.delete_message(chat_id, m.message_id)
+            except: pass
             
         if welcome_image:
             try: bot.send_photo(chat_id, welcome_image, caption=text, reply_markup=markup, parse_mode="Markdown")
-            except Exception: 
-                try: bot.send_photo(chat_id, welcome_image, caption=text, reply_markup=markup) 
-                except: bot.send_message(chat_id, text, reply_markup=markup) 
+            except: bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
         else:
-            try: bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
-            except Exception: bot.send_message(chat_id, text, reply_markup=markup) 
+            bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
 
-# --- BOTTOM MENU ROUTER ---
-@bot.message_handler(func=lambda message: message.text == "📁 Panel Files")
-def handle_panel_files(message):
-    config = settings_col.find_one({"_id": "config"}) or {}
-    panel_link = validate_url(config.get("panel_files_link", "https://t.me/Nexapayz"))
-    
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🔗 Open Panel Files", url=panel_link))
-    bot.send_message(message.chat.id, "📁 **Click the button below to access Panel Files:**", reply_markup=markup, parse_mode="Markdown")
-
+# --- ADMIN BOTTOM MENU ROUTER ---
 @bot.message_handler(func=lambda message: message.text == "⚙️ Admin Panel")
 def enter_admin_panel(message):
     if not is_admin(message.from_user.id): return
@@ -320,9 +295,6 @@ def admin_menu_handler(message):
 # --- INLINE CALLBACK ROUTER ---
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
-    try: bot.answer_callback_query(call.id)
-    except: pass
-    
     chat_id = call.message.chat.id
     msg_id = call.message.message_id
     config = settings_col.find_one({"_id": "config"}) or {}
@@ -335,7 +307,7 @@ def callback_handler(call):
             bot.delete_message(chat_id, msg_id)
             send_welcome(call.message)
         else:
-            bot.send_message(chat_id, "❌ You must join our official channel first!")
+            bot.answer_callback_query(call.id, "❌ Not joined yet!", show_alert=True)
             
     elif call.data == "main_menu":
         main_menu(chat_id, msg_id, call.from_user.first_name)
@@ -378,7 +350,7 @@ def callback_handler(call):
         ref_link = f"https://t.me/{bot_username}?start=ref_{chat_id}"
         text = (
             "━━━━━━━━━━━━━━━━━━━━\n👤 **YOUR PROFILE**\n━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📛 **Name:** {escape_md(call.from_user.first_name)}\n"
+            f"📛 **Name:** {call.from_user.first_name}\n"
             f"🆔 **User ID:** `{chat_id}`\n"
             f"📱 **Phone:** `+{phone.replace('+', '')}`\n"
             f"📅 **Member Since:** {date}\n"
@@ -439,7 +411,7 @@ def callback_handler(call):
     elif call.data.startswith("list_"):
         prod_id = call.data.replace("list_", "")
         p = products_col.find_one({"_id": prod_id})
-        if not p: return bot.send_message(chat_id, "❌ Product removed.")
+        if not p: return bot.answer_callback_query(call.id, "Product removed.", show_alert=True)
         plans = list(plans_col.find({"product_id": prod_id}))
         markup = InlineKeyboardMarkup()
         if not plans:
@@ -456,7 +428,7 @@ def callback_handler(call):
     elif call.data.startswith("buy_plan_"):
         plan_id = call.data.replace("buy_plan_", "")
         plan = plans_col.find_one({"_id": plan_id})
-        if not plan: return bot.send_message(chat_id, "❌ Plan not found!")
+        if not plan: return bot.answer_callback_query(call.id, "Plan not found!", show_alert=True)
         
         p = products_col.find_one({"_id": plan["product_id"]})
         upi_id = config.get("upi_id", "error@upi")
@@ -495,7 +467,7 @@ def callback_handler(call):
 
     elif call.data == "prod_delete":
         products = list(products_col.find())
-        if not products: return bot.send_message(chat_id, "❌ No products exist.")
+        if not products: return bot.answer_callback_query(call.id, "No products exist.", show_alert=True)
         markup = InlineKeyboardMarkup()
         for p in products: markup.add(InlineKeyboardButton(f"❌ {p['name']}", callback_data=f"delprod_{p['_id']}"))
         markup.add(InlineKeyboardButton("⬅️ Back", callback_data="close_menu"))
@@ -509,7 +481,7 @@ def callback_handler(call):
 
     elif call.data == "plan_add":
         products = list(products_col.find())
-        if not products: return bot.send_message(chat_id, "❌ Create a Product first!")
+        if not products: return bot.answer_callback_query(call.id, "Create a Product first!", show_alert=True)
         markup = InlineKeyboardMarkup()
         for p in products: markup.add(InlineKeyboardButton(p["name"], callback_data=f"addplan_{p['_id']}"))
         markup.add(InlineKeyboardButton("⬅️ Back", callback_data="close_menu"))
@@ -523,7 +495,7 @@ def callback_handler(call):
 
     elif call.data == "plan_delete":
         plans = list(plans_col.find())
-        if not plans: return bot.send_message(chat_id, "❌ No plans exist.")
+        if not plans: return bot.answer_callback_query(call.id, "No plans exist.", show_alert=True)
         markup = InlineKeyboardMarkup()
         for p in plans: markup.add(InlineKeyboardButton(f"❌ {p['name']} (₹{p['price']})", callback_data=f"delplan_{p['_id']}"))
         markup.add(InlineKeyboardButton("⬅️ Back", callback_data="close_menu"))
@@ -536,20 +508,21 @@ def callback_handler(call):
 
     # --- ADMIN APPROVALS (ORDERS WITH AUTO-DELIVERY) ---
     elif call.data.startswith("approve_") or call.data.startswith("reject_"):
-        if not is_admin(call.from_user.id): 
-            return bot.send_message(chat_id, "❌ Unauthorized")
+        if not is_admin(call.from_user.id): return bot.answer_callback_query(call.id, "Unauthorized", show_alert=True)
         parts = call.data.split("_")
         action, user_id, order_id = parts[0], int(parts[1]), parts[2]
         
         user = users_col.find_one({"user_id": user_id})
         target_order = next((o for o in user.get("orders", []) if o.get("order_id") == order_id), None) if user else None
         if not target_order or target_order.get("status") != "Pending Verification":
-            bot.edit_message_caption(f"{call.message.caption}\n\n🔒 **PROCESSED ALREADY**", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
+            bot.answer_callback_query(call.id, "Already processed!", show_alert=True)
+            bot.edit_message_caption(f"{call.message.caption}\n\n🔒 **PROCESSED**", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
             return
             
         new_status = "Approved ✅" if action == "approve" else "Cancelled 🚫"
         users_col.update_one({"user_id": user_id, "orders.order_id": order_id}, {"$set": {"orders.$.status": new_status}})
         bot.edit_message_caption(f"{call.message.caption}\n\n**Status:** {new_status} (by {call.from_user.first_name})", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
+        bot.answer_callback_query(call.id, f"Order {new_status}")
         
         if action == "approve":
             plan_name = target_order.get('plan_name')
@@ -574,6 +547,7 @@ def callback_handler(call):
         action, user_id, amount = parts[1], int(parts[2]), float(parts[3])
         
         bot.edit_message_caption(f"{call.message.caption}\n\n🔒 **PROCESSED** ({action.upper()})", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
+        bot.answer_callback_query(call.id, f"Deposit {action}")
         
         if action == "approve":
             users_col.update_one({"user_id": user_id}, {"$inc": {"balance": amount}})
@@ -622,8 +596,7 @@ def callback_handler(call):
     # --- ADVANCED ADMIN MANAGEMENT (KEYS, PROMOS, RESELLERS) ---
     elif call.data == "keys_add":
         plans = list(plans_col.find())
-        if not plans: 
-            return bot.send_message(chat_id, "❌ Create a Plan first!")
+        if not plans: return bot.answer_callback_query(call.id, "Create a Plan first!", show_alert=True)
         markup = InlineKeyboardMarkup()
         for p in plans: markup.add(InlineKeyboardButton(f"{p['name']}", callback_data=f"addkey_{p['_id']}"))
         markup.add(InlineKeyboardButton("⬅️ Back", callback_data="close_menu"))
@@ -653,8 +626,7 @@ def callback_handler(call):
 
     elif call.data == "promo_delete":
         promos = list(promos_col.find())
-        if not promos: 
-            return bot.send_message(chat_id, "❌ No promos exist.")
+        if not promos: return bot.answer_callback_query(call.id, "No promos exist.", show_alert=True)
         markup = InlineKeyboardMarkup()
         for p in promos: markup.add(InlineKeyboardButton(f"❌ {p['code']} ({p['discount']}%)", callback_data=f"delpromo_{p['code']}"))
         markup.add(InlineKeyboardButton("⬅️ Back", callback_data="close_menu"))
@@ -672,8 +644,7 @@ def callback_handler(call):
 
     elif call.data == "reseller_remove":
         resellers = list(admins_col.find({"role": "reseller"}))
-        if not resellers: 
-            return bot.send_message(chat_id, "❌ No resellers exist.")
+        if not resellers: return bot.answer_callback_query(call.id, "No resellers exist.", show_alert=True)
         markup = InlineKeyboardMarkup()
         for r in resellers: markup.add(InlineKeyboardButton(f"❌ {r['user_id']}", callback_data=f"delreseller_{r['user_id']}"))
         markup.add(InlineKeyboardButton("⬅️ Back", callback_data="close_menu"))
@@ -785,6 +756,7 @@ def process_panel_files_link(message):
     settings_col.update_one({"_id": "config"}, {"$set": {"panel_files_link": message.text.strip()}})
     bot.send_message(message.chat.id, "✅ Panel Files link updated successfully!")
 
+# 🚨 UPDATED BROADCAST FUNCTION TO HANDLE ALL MEDIA FORMATS PERFECTLY
 def process_broadcast(message):
     bot.send_message(message.chat.id, "⏳ Broadcasting...")
     success = 0
