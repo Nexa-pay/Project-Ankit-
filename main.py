@@ -81,6 +81,11 @@ def check_force_join(user_id):
     except:
         return False
 
+def escape_md(text):
+    # Removes unclosed markdown characters from usernames to prevent crashes
+    if not text: return "User"
+    return str(text).replace("*", "").replace("_", "").replace("`", "").replace("[", "")
+
 def safe_edit_text(text, chat_id, message_id, markup, image=None):
     try:
         if image:
@@ -91,11 +96,15 @@ def safe_edit_text(text, chat_id, message_id, markup, image=None):
         try: bot.delete_message(chat_id, message_id)
         except: pass
         
+        # 🛡️ Markdown Fallback: If markdown is broken, send as plain text so it NEVER crashes
         if image:
             try: bot.send_photo(chat_id, image, caption=text, reply_markup=markup, parse_mode="Markdown")
-            except: bot.send_message(chat_id, text + "\n\n*(Error loading banner image)*", reply_markup=markup, parse_mode="Markdown")
+            except Exception: 
+                try: bot.send_photo(chat_id, image, caption=text, reply_markup=markup) # Fallback without markdown
+                except: bot.send_message(chat_id, text, reply_markup=markup) # Fallback if image fails
         else:
-            bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
+            try: bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
+            except Exception: bot.send_message(chat_id, text, reply_markup=markup) # Fallback without markdown
 
 def validate_url(url):
     if not url or not str(url).startswith("http"):
@@ -104,7 +113,6 @@ def validate_url(url):
 
 # --- KEYBOARDS ---
 def user_main_keyboard(user_id):
-    # Places Panel Files and Admin Panel on the bottom menu
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     if is_admin(user_id):
         markup.row(KeyboardButton("📁 Panel Files"), KeyboardButton("⚙️ Admin Panel"))
@@ -130,12 +138,14 @@ def send_welcome(message):
     
     # 🔔 NOTIFY ONLY OWNER AND TRUE ADMINS WHEN SOMEONE STARTS THE BOT
     try:
+        safe_name = escape_md(message.from_user.first_name)
+        safe_username = escape_md(message.from_user.username or 'None')
         admin_notification = (
             f"🔔 **USER STARTED THE BOT**\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"👤 **Name:** {message.from_user.first_name}\n"
+            f"👤 **Name:** {safe_name}\n"
             f"🆔 **ID:** `{message.from_user.id}`\n"
-            f"🔗 **Username:** @{message.from_user.username or 'None'}\n"
+            f"🔗 **Username:** @{safe_username}\n"
             f"━━━━━━━━━━━━━━━━━━"
         )
         try: bot.send_message(OWNER_ID, admin_notification, parse_mode="Markdown")
@@ -185,12 +195,12 @@ def main_menu(chat_id, message_id=None, user_first_name="User"):
     pay_proof_link = validate_url(config.get("pay_proof_link"))
     welcome_image = config.get("welcome_image", "")
     
-    # 🛡️ THE CRASH FIX: Safely fallback if database value is completely empty/None
     welcome_template = config.get("welcome_msg")
     if not welcome_template:
         welcome_template = default_welcome
         
-    text = str(welcome_template).replace("{name}", str(user_first_name))
+    safe_name = escape_md(user_first_name)
+    text = str(welcome_template).replace("{name}", safe_name)
     
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("🛒 Shop Now", callback_data="shop_menu"))
@@ -201,16 +211,18 @@ def main_menu(chat_id, message_id=None, user_first_name="User"):
     if message_id: 
         safe_edit_text(text, chat_id, message_id, markup, image=welcome_image)
     else: 
-        # Update the bottom keyboard smoothly
         m = bot.send_message(chat_id, "Loading store...", reply_markup=user_main_keyboard(chat_id))
         try: bot.delete_message(chat_id, m.message_id)
         except: pass
             
         if welcome_image:
             try: bot.send_photo(chat_id, welcome_image, caption=text, reply_markup=markup, parse_mode="Markdown")
-            except: bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
+            except Exception: 
+                try: bot.send_photo(chat_id, welcome_image, caption=text, reply_markup=markup) # Safe Mode
+                except: bot.send_message(chat_id, text, reply_markup=markup) 
         else:
-            bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
+            try: bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
+            except Exception: bot.send_message(chat_id, text, reply_markup=markup) # Safe Mode
 
 # --- BOTTOM MENU ROUTER ---
 @bot.message_handler(func=lambda message: message.text == "📁 Panel Files")
@@ -361,7 +373,7 @@ def callback_handler(call):
         ref_link = f"https://t.me/{bot_username}?start=ref_{chat_id}"
         text = (
             "━━━━━━━━━━━━━━━━━━━━\n👤 **YOUR PROFILE**\n━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📛 **Name:** {call.from_user.first_name}\n"
+            f"📛 **Name:** {escape_md(call.from_user.first_name)}\n"
             f"🆔 **User ID:** `{chat_id}`\n"
             f"📱 **Phone:** `+{phone.replace('+', '')}`\n"
             f"📅 **Member Since:** {date}\n"
@@ -551,6 +563,33 @@ def callback_handler(call):
         else: 
             bot.send_message(user_id, f"❌ **Payment Rejected!**\n\nYour order for `{target_order.get('plan_name')}` could not be verified.", parse_mode="Markdown")
 
+    # --- ADMIN APPROVALS (DEPOSITS) ---
+    elif call.data.startswith("dep_approve_") or call.data.startswith("dep_reject_"):
+        if not is_admin(call.from_user.id): return
+        parts = call.data.split("_")
+        action, user_id, amount = parts[1], int(parts[2]), float(parts[3])
+        
+        bot.edit_message_caption(f"{call.message.caption}\n\n🔒 **PROCESSED** ({action.upper()})", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
+        bot.answer_callback_query(call.id, f"Deposit {action}")
+        
+        if action == "approve":
+            users_col.update_one({"user_id": user_id}, {"$inc": {"balance": amount}})
+            bot.send_message(user_id, f"✅ **Deposit Approved!**\n\n₹{amount} has been added to your wallet balance.")
+        else:
+            bot.send_message(user_id, f"❌ **Deposit Rejected!**\n\nYour request to add ₹{amount} was declined.")
+
+    # --- ADMIN USER MANAGEMENT CALLBACKS ---
+    elif call.data.startswith("addbal_"):
+        uid = int(call.data.split("_")[1])
+        bot.delete_message(chat_id, msg_id)
+        msg = bot.send_message(chat_id, "Enter amount to ADD to this user's balance:")
+        bot.register_next_step_handler(msg, lambda m: modify_balance(m, uid, True))
+    elif call.data.startswith("deductbal_"):
+        uid = int(call.data.split("_")[1])
+        bot.delete_message(chat_id, msg_id)
+        msg = bot.send_message(chat_id, "Enter amount to DEDUCT from this user's balance:")
+        bot.register_next_step_handler(msg, lambda m: modify_balance(m, uid, False))
+
     # --- ADMIN SETTINGS CALLBACKS ---
     elif call.data == "set_welcome":
         msg = bot.send_message(chat_id, "Send your new Welcome Message.\nUse `{name}` and `{prod_count}` for dynamic text.")
@@ -576,7 +615,7 @@ def callback_handler(call):
     elif call.data == "admin_remove":
         msg = bot.send_message(chat_id, "Send the Telegram User ID of the admin to REMOVE:")
         bot.register_next_step_handler(msg, process_remove_admin)
-
+        
     # --- ADVANCED ADMIN MANAGEMENT (KEYS, PROMOS, RESELLERS) ---
     elif call.data == "keys_add":
         plans = list(plans_col.find())
