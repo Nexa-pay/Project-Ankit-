@@ -39,11 +39,11 @@ pending_inputs = {}
 
 # --- INITIALIZE SETTINGS ---
 default_welcome = (
-    "🔥 ━━ **PANEL STORE FREE FIRE** ━━ 🔥\n"
-    "*Powered by Nexapayz*\n\n"
-    "💥 Yo **{name}**, Welcome!!\n\n"
+    "💎 ━━ **PANEL STORE FREE FIRE** ━━ 💎\n"
+    "✨ *Powered by Nexapayz*\n\n"
+    "🚀 Yo **{name}**, Welcome!!\n\n"
     "━━━━━━━━━━━━━━━━━━\n\n"
-    "❓ **Why our store is trusted?**\n"
+    "👑 **Why our store is trusted?**\n"
     "↳ Direct deals with every mod developer\n"
     "↳ Instant delivery after payment\n"
     "↳ **5% discount** on your 2nd & every extra purchase\n"
@@ -54,7 +54,7 @@ if not settings_col.find_one({"_id": "config"}):
     settings_col.insert_one({
         "_id": "config",
         "welcome_msg": default_welcome,
-        "welcome_image": "", # Stores the File ID of your banner
+        "welcome_image": "", 
         "upi_id": "your_upi_id@okhdfcbank",
         "whatsapp_num": "+919876543210",
         "min_deposit": 100,
@@ -124,6 +124,22 @@ def admin_main_keyboard():
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     chat_id = message.chat.id
+    
+    # 🔔 NOTIFY ADMINS WHEN SOMEONE STARTS THE BOT
+    try:
+        admin_notification = (
+            f"🔔 **USER STARTED THE BOT**\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"👤 **Name:** {message.from_user.first_name}\n"
+            f"🆔 **ID:** `{message.from_user.id}`\n"
+            f"🔗 **Username:** @{message.from_user.username or 'None'}\n"
+            f"━━━━━━━━━━━━━━━━━━"
+        )
+        for admin in admins_col.find():
+            try: bot.send_message(admin["user_id"], admin_notification, parse_mode="Markdown")
+            except: pass
+    except: pass
+
     if not check_force_join(message.from_user.id):
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("📢 Join Channel", url=validate_url(f"https://t.me/{FORCE_JOIN_CHANNEL.replace('@', '')}")))
@@ -162,7 +178,6 @@ def main_menu(chat_id, message_id=None, user_first_name="User"):
     pay_proof_link = validate_url(config.get("pay_proof_link"))
     welcome_image = config.get("welcome_image", "")
     
-    # 🛡️ Crash Fix: Ensure welcome_template is never None
     welcome_template = config.get("welcome_msg") or default_welcome
     text = welcome_template.replace("{name}", user_first_name)
     
@@ -484,7 +499,7 @@ def callback_handler(call):
         plans_col.delete_one({"_id": pid})
         safe_edit_text("✅ Plan deleted.", chat_id, msg_id, None)
 
-    # --- ADMIN APPROVALS (ORDERS WITH AUTO-DELIVERY) ---
+    # --- ADMIN APPROVALS (ORDERS) ---
     elif call.data.startswith("approve_") or call.data.startswith("reject_"):
         if not is_admin(call.from_user.id): return bot.answer_callback_query(call.id, "Unauthorized", show_alert=True)
         parts = call.data.split("_")
@@ -518,6 +533,33 @@ def callback_handler(call):
         else: 
             bot.send_message(user_id, f"❌ **Payment Rejected!**\n\nYour order for `{target_order.get('plan_name')}` could not be verified.", parse_mode="Markdown")
 
+    # --- ADMIN APPROVALS (DEPOSITS) ---
+    elif call.data.startswith("dep_approve_") or call.data.startswith("dep_reject_"):
+        if not is_admin(call.from_user.id): return
+        parts = call.data.split("_")
+        action, user_id, amount = parts[1], int(parts[2]), float(parts[3])
+        
+        bot.edit_message_caption(f"{call.message.caption}\n\n🔒 **PROCESSED** ({action.upper()})", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
+        bot.answer_callback_query(call.id, f"Deposit {action}")
+        
+        if action == "approve":
+            users_col.update_one({"user_id": user_id}, {"$inc": {"balance": amount}})
+            bot.send_message(user_id, f"✅ **Deposit Approved!**\n\n₹{amount} has been added to your wallet balance.")
+        else:
+            bot.send_message(user_id, f"❌ **Deposit Rejected!**\n\nYour request to add ₹{amount} was declined.")
+
+    # --- ADMIN USER MANAGEMENT CALLBACKS ---
+    elif call.data.startswith("addbal_"):
+        uid = int(call.data.split("_")[1])
+        bot.delete_message(chat_id, msg_id)
+        msg = bot.send_message(chat_id, "Enter amount to ADD to this user's balance:")
+        bot.register_next_step_handler(msg, lambda m: modify_balance(m, uid, True))
+    elif call.data.startswith("deductbal_"):
+        uid = int(call.data.split("_")[1])
+        bot.delete_message(chat_id, msg_id)
+        msg = bot.send_message(chat_id, "Enter amount to DEDUCT from this user's balance:")
+        bot.register_next_step_handler(msg, lambda m: modify_balance(m, uid, False))
+
     # --- ADMIN SETTINGS CALLBACKS ---
     elif call.data == "set_welcome":
         msg = bot.send_message(chat_id, "Send your new Welcome Message.\nUse `{name}` and `{prod_count}` for dynamic text.")
@@ -540,7 +582,7 @@ def callback_handler(call):
     elif call.data == "admin_remove":
         msg = bot.send_message(chat_id, "Send the Telegram User ID of the admin to REMOVE:")
         bot.register_next_step_handler(msg, process_remove_admin)
-
+        
     # --- ADVANCED ADMIN MANAGEMENT (KEYS, PROMOS, RESELLERS) ---
     elif call.data == "keys_add":
         plans = list(plans_col.find())
@@ -812,6 +854,7 @@ def process_payment_screenshot(message):
         markup = InlineKeyboardMarkup()
         markup.row(InlineKeyboardButton("✅ Approve", callback_data=f"approve_{chat_id}_{order_id}"), InlineKeyboardButton("❌ Reject", callback_data=f"reject_{chat_id}_{order_id}"))
     
+    # Broadcast to all admins
     bot.send_photo(OWNER_ID, message.photo[-1].file_id, caption=admin_caption, reply_markup=markup, parse_mode="Markdown")
     for admin in admins_col.find():
         if admin["user_id"] != OWNER_ID:
