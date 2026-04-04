@@ -61,6 +61,7 @@ if not settings_col.find_one({"_id": "config"}):
         "max_deposit": 5000,
         "support_link": "https://t.me/Nexapayz",
         "pay_proof_link": "https://t.me/Nexapayz",
+        "panel_files_link": "https://t.me/Nexapayz",
         "tutorial_link": "https://youtube.com"
     })
 
@@ -135,11 +136,9 @@ def send_welcome(message):
             f"🔗 **Username:** @{message.from_user.username or 'None'}\n"
             f"━━━━━━━━━━━━━━━━━━"
         )
-        # Notify Owner
         try: bot.send_message(OWNER_ID, admin_notification, parse_mode="Markdown")
         except: pass
         
-        # Notify true admins (excluding Owner to prevent duplicate, and excluding Resellers)
         for admin in admins_col.find():
             if admin["user_id"] != OWNER_ID and admin.get("role") != "reseller":
                 try: bot.send_message(admin["user_id"], admin_notification, parse_mode="Markdown")
@@ -182,6 +181,7 @@ def handle_contact(message):
 def main_menu(chat_id, message_id=None, user_first_name="User"):
     config = settings_col.find_one({"_id": "config"}) or {}
     pay_proof_link = validate_url(config.get("pay_proof_link"))
+    panel_files_link = validate_url(config.get("panel_files_link", "https://t.me/Nexapayz"))
     welcome_image = config.get("welcome_image", "")
     
     welcome_template = config.get("welcome_msg") or default_welcome
@@ -192,6 +192,7 @@ def main_menu(chat_id, message_id=None, user_first_name="User"):
     markup.row(InlineKeyboardButton("📦 My Orders", callback_data="my_orders"), InlineKeyboardButton("👤 Profile", callback_data="my_profile"))
     markup.row(InlineKeyboardButton("↗️ Pay Proof", url=pay_proof_link), InlineKeyboardButton("❓ How to Use", callback_data="how_to_use"))
     markup.row(InlineKeyboardButton("💬 Support", callback_data="support_menu"), InlineKeyboardButton("🎁 Referral", callback_data="my_referral"))
+    markup.add(InlineKeyboardButton("📁 Panel Files", url=panel_files_link))
     
     if message_id: 
         safe_edit_text(text, chat_id, message_id, markup, image=welcome_image)
@@ -272,7 +273,7 @@ def admin_menu_handler(message):
         bot.send_message(chat_id, "⭐ **Reseller Management**", reply_markup=markup, parse_mode="Markdown")
 
     elif cmd == "📢 Broadcast":
-        msg = bot.send_message(chat_id, "📢 **Broadcast**\n\nSend the message you want to broadcast to all users:")
+        msg = bot.send_message(chat_id, "📢 **Broadcast**\n\nSend the message, photo, or video you want to broadcast to all users. (It will be sent exactly as you format it):", parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_broadcast)
 
     elif cmd == "⚙️ Settings":
@@ -287,7 +288,7 @@ def admin_menu_handler(message):
         markup = InlineKeyboardMarkup()
         markup.row(InlineKeyboardButton("📝 Edit Welcome Msg", callback_data="set_welcome"), InlineKeyboardButton("🖼 Set Welcome Image", callback_data="set_welcome_img"))
         markup.row(InlineKeyboardButton("💳 Set UPI ID", callback_data="set_upi"), InlineKeyboardButton("📱 Set WhatsApp", callback_data="set_whatsapp"))
-        markup.add(InlineKeyboardButton("🔗 Change Links", callback_data="admin_links"))
+        markup.row(InlineKeyboardButton("🔗 Change Links", callback_data="admin_links"), InlineKeyboardButton("📁 Set Panel Files", callback_data="set_panel_files"))
         markup.row(InlineKeyboardButton("👥 Add Admin", callback_data="admin_add"), InlineKeyboardButton("🚫 Remove Admin", callback_data="admin_remove"))
         bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
 
@@ -505,7 +506,7 @@ def callback_handler(call):
         plans_col.delete_one({"_id": pid})
         safe_edit_text("✅ Plan deleted.", chat_id, msg_id, None)
 
-    # --- ADMIN APPROVALS (ORDERS) ---
+    # --- ADMIN APPROVALS (ORDERS WITH AUTO-DELIVERY) ---
     elif call.data.startswith("approve_") or call.data.startswith("reject_"):
         if not is_admin(call.from_user.id): return bot.answer_callback_query(call.id, "Unauthorized", show_alert=True)
         parts = call.data.split("_")
@@ -582,6 +583,9 @@ def callback_handler(call):
     elif call.data == "admin_links":
         msg = bot.send_message(chat_id, "Send new links separated by a space:\n`Support Proof Tutorial`\nExample:\n`https://t.me/sup https://t.me/prf https://youtu.be/x`", parse_mode="Markdown")
         bot.register_next_step_handler(msg, process_links)
+    elif call.data == "set_panel_files":
+        msg = bot.send_message(chat_id, "Send the new link for the **Panel Files** button (must start with http/https):", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_panel_files_link)
     elif call.data == "admin_add":
         msg = bot.send_message(chat_id, "Send the Telegram User ID of the new admin:")
         bot.register_next_step_handler(msg, process_add_admin)
@@ -748,12 +752,17 @@ def process_links(message):
     except:
         bot.send_message(message.chat.id, "❌ Error. Send exactly 3 valid links separated by spaces.")
 
+def process_panel_files_link(message):
+    settings_col.update_one({"_id": "config"}, {"$set": {"panel_files_link": message.text.strip()}})
+    bot.send_message(message.chat.id, "✅ Panel Files link updated successfully!")
+
+# 🚨 UPDATED BROADCAST FUNCTION TO HANDLE ALL MEDIA FORMATS PERFECTLY
 def process_broadcast(message):
     bot.send_message(message.chat.id, "⏳ Broadcasting...")
     success = 0
     for user in users_col.find():
         try:
-            bot.send_message(user["user_id"], f"📣 **Announcement**\n\n{message.text}", parse_mode="Markdown")
+            bot.copy_message(chat_id=user["user_id"], from_chat_id=message.chat.id, message_id=message.message_id)
             success += 1
         except: pass
     bot.send_message(message.chat.id, f"✅ Broadcast sent to {success} users.")
@@ -860,7 +869,6 @@ def process_payment_screenshot(message):
         markup = InlineKeyboardMarkup()
         markup.row(InlineKeyboardButton("✅ Approve", callback_data=f"approve_{chat_id}_{order_id}"), InlineKeyboardButton("❌ Reject", callback_data=f"reject_{chat_id}_{order_id}"))
     
-    # STRICT NOTIFICATION: ONLY Notify Owner and True Admins (NO Resellers)
     try: bot.send_photo(OWNER_ID, message.photo[-1].file_id, caption=admin_caption, reply_markup=markup, parse_mode="Markdown")
     except: pass
     
