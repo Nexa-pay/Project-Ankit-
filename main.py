@@ -92,7 +92,6 @@ def safe_edit_text(text, chat_id, message_id, markup, image=None):
         else:
             bot.edit_message_text(text=text, chat_id=chat_id, message_id=message_id, reply_markup=markup, parse_mode="Markdown")
     except Exception as e:
-        # 🛡️ If the text hasn't changed, ignore the error to stop glitches
         if "not modified" in str(e).lower() or "exactly the same" in str(e).lower():
             return
             
@@ -138,7 +137,6 @@ def admin_main_keyboard():
 def send_welcome(message):
     chat_id = message.chat.id
     
-    # 🔔 NOTIFY ONLY OWNER AND TRUE ADMINS WHEN SOMEONE STARTS THE BOT
     try:
         safe_name = escape_md(message.from_user.first_name)
         safe_username = escape_md(message.from_user.username or 'None')
@@ -213,9 +211,11 @@ def main_menu(chat_id, message_id=None, user_first_name="User"):
     if message_id: 
         safe_edit_text(text, chat_id, message_id, markup, image=welcome_image)
     else: 
-        m = bot.send_message(chat_id, "Loading store...", reply_markup=user_main_keyboard(chat_id))
-        try: bot.delete_message(chat_id, m.message_id)
-        except: pass
+        # 🛑 THE FIX: Sends a permanent message to hold the bottom keyboard so it never disappears
+        if is_admin(chat_id):
+            bot.send_message(chat_id, "👑 **Admin Access Verified**", reply_markup=user_main_keyboard(chat_id), parse_mode="Markdown")
+        else:
+            bot.send_message(chat_id, "✅ **Store Updated**", reply_markup=user_main_keyboard(chat_id), parse_mode="Markdown")
             
         if welcome_image:
             try: bot.send_photo(chat_id, welcome_image, caption=text, reply_markup=markup, parse_mode="Markdown")
@@ -320,7 +320,6 @@ def admin_menu_handler(message):
 # --- INLINE CALLBACK ROUTER ---
 @bot.callback_query_handler(func=lambda call: True)
 def callback_handler(call):
-    # 🛑 THE FIX: INSTANTLY STOPS THE SPINNING BUTTON LOADER
     try: bot.answer_callback_query(call.id)
     except: pass
     
@@ -440,8 +439,7 @@ def callback_handler(call):
     elif call.data.startswith("list_"):
         prod_id = call.data.replace("list_", "")
         p = products_col.find_one({"_id": prod_id})
-        if not p: 
-            return bot.send_message(chat_id, "❌ Product has been removed.")
+        if not p: return bot.send_message(chat_id, "❌ Product removed.")
         plans = list(plans_col.find({"product_id": prod_id}))
         markup = InlineKeyboardMarkup()
         if not plans:
@@ -458,8 +456,7 @@ def callback_handler(call):
     elif call.data.startswith("buy_plan_"):
         plan_id = call.data.replace("buy_plan_", "")
         plan = plans_col.find_one({"_id": plan_id})
-        if not plan: 
-            return bot.send_message(chat_id, "❌ Plan not found!")
+        if not plan: return bot.send_message(chat_id, "❌ Plan not found!")
         
         p = products_col.find_one({"_id": plan["product_id"]})
         upi_id = config.get("upi_id", "error@upi")
@@ -498,8 +495,7 @@ def callback_handler(call):
 
     elif call.data == "prod_delete":
         products = list(products_col.find())
-        if not products: 
-            return bot.send_message(chat_id, "❌ No products exist.")
+        if not products: return bot.send_message(chat_id, "❌ No products exist.")
         markup = InlineKeyboardMarkup()
         for p in products: markup.add(InlineKeyboardButton(f"❌ {p['name']}", callback_data=f"delprod_{p['_id']}"))
         markup.add(InlineKeyboardButton("⬅️ Back", callback_data="close_menu"))
@@ -513,8 +509,7 @@ def callback_handler(call):
 
     elif call.data == "plan_add":
         products = list(products_col.find())
-        if not products: 
-            return bot.send_message(chat_id, "❌ Create a Product first!")
+        if not products: return bot.send_message(chat_id, "❌ Create a Product first!")
         markup = InlineKeyboardMarkup()
         for p in products: markup.add(InlineKeyboardButton(p["name"], callback_data=f"addplan_{p['_id']}"))
         markup.add(InlineKeyboardButton("⬅️ Back", callback_data="close_menu"))
@@ -528,8 +523,7 @@ def callback_handler(call):
 
     elif call.data == "plan_delete":
         plans = list(plans_col.find())
-        if not plans: 
-            return bot.send_message(chat_id, "❌ No plans exist.")
+        if not plans: return bot.send_message(chat_id, "❌ No plans exist.")
         markup = InlineKeyboardMarkup()
         for p in plans: markup.add(InlineKeyboardButton(f"❌ {p['name']} (₹{p['price']})", callback_data=f"delplan_{p['_id']}"))
         markup.add(InlineKeyboardButton("⬅️ Back", callback_data="close_menu"))
