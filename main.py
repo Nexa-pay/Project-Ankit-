@@ -55,8 +55,7 @@ if not settings_col.find_one({"_id": "config"}):
         "_id": "config",
         "welcome_msg": default_welcome,
         "upi_id": "your_upi_id@okhdfcbank",
-        "min_deposit": 100,
-        "max_deposit": 5000,
+        "whatsapp_num": "+919876543210",
         "support_link": "https://t.me/Nexapayz",
         "pay_proof_link": "https://t.me/Nexapayz",
         "tutorial_link": "https://youtube.com"
@@ -87,14 +86,13 @@ def safe_edit_text(text, chat_id, message_id, markup):
         bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
 
 def validate_url(url):
-    # This specifically blocks the "Wrong HTTP URL" Crash forever
     if not url or not str(url).startswith("http"):
         return "https://t.me/Nexapayz"
     return str(url).strip()
 
 # --- KEYBOARDS ---
 def user_main_keyboard(user_id):
-    # Removes all bottom buttons EXCEPT Admin Panel for authorized users
+    # Keep Only Admin Panel for Admins, hide everything for normal users
     if is_admin(user_id):
         markup = ReplyKeyboardMarkup(resize_keyboard=True)
         markup.add(KeyboardButton("⚙️ Admin Panel"))
@@ -151,7 +149,6 @@ def handle_contact(message):
 
 def main_menu(chat_id, message_id=None, user_first_name="User"):
     config = settings_col.find_one({"_id": "config"}) or {}
-    support_link = validate_url(config.get("support_link"))
     pay_proof_link = validate_url(config.get("pay_proof_link"))
     
     welcome_template = config.get("welcome_msg", default_welcome)
@@ -161,12 +158,11 @@ def main_menu(chat_id, message_id=None, user_first_name="User"):
     markup.add(InlineKeyboardButton("🛒 Shop Now", callback_data="shop_menu"))
     markup.row(InlineKeyboardButton("📦 My Orders", callback_data="my_orders"), InlineKeyboardButton("👤 Profile", callback_data="my_profile"))
     markup.row(InlineKeyboardButton("↗️ Pay Proof", url=pay_proof_link), InlineKeyboardButton("❓ How to Use", callback_data="how_to_use"))
-    markup.row(InlineKeyboardButton("💬 Support", url=support_link), InlineKeyboardButton("🎁 Referral", callback_data="my_referral"))
+    markup.row(InlineKeyboardButton("💬 Support", callback_data="support_menu"), InlineKeyboardButton("🎁 Referral", callback_data="my_referral"))
     
     if message_id: 
         safe_edit_text(text, chat_id, message_id, markup)
     else: 
-        # Update the bottom keyboard seamlessly, then send the inline menu
         if is_admin(chat_id):
             bot.send_message(chat_id, "👑 **Admin Access Granted**", reply_markup=user_main_keyboard(chat_id), parse_mode="Markdown")
         else:
@@ -174,108 +170,6 @@ def main_menu(chat_id, message_id=None, user_first_name="User"):
             bot.delete_message(chat_id, m.message_id)
             
         bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
-
-# --- BOTTOM MENU ROUTER (Users - Kept for legacy compatibility) ---
-@bot.message_handler(func=lambda message: message.text in ["🛍 Shop Now", "📦 Orders", "👤 Profile", "💰 Add Balance", "🎁 Referral", "❓ How to Use", "🆘 Support"])
-def user_bottom_menu(message):
-    chat_id = message.chat.id
-    config = settings_col.find_one({"_id": "config"}) or {}
-    
-    if message.text == "🛍 Shop Now":
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("📱 Android", callback_data="shop_Android"))
-        markup.add(InlineKeyboardButton("🍎 iOS", callback_data="shop_iOS"))
-        markup.add(InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu"))
-        bot.send_message(chat_id, "🔥 **Choose your device category:**", reply_markup=markup, parse_mode="Markdown")
-
-    elif message.text == "👤 Profile":
-        user = users_col.find_one({"user_id": chat_id}) or {}
-        phone = user.get("phone", "Not Provided")
-        date = user.get("date", datetime.now().strftime("%d %b %Y"))
-        orders_count = len(user.get("orders", []))
-        balance = user.get("balance", 0.0)
-        
-        bot_username = bot.get_me().username
-        ref_link = f"https://t.me/{bot_username}?start=ref_{chat_id}"
-        
-        text = (
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            "👤 **YOUR PROFILE**\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📛 **Name:** {message.from_user.first_name}\n"
-            f"🆔 **User ID:** `{chat_id}`\n"
-            f"📱 **Phone:** `+{phone.replace('+', '')}`\n"
-            f"📅 **Member Since:** {date}\n"
-            f"💰 **Wallet Balance:** ₹{balance}\n"
-            f"🛒 **Total Orders:** {orders_count}\n\n"
-            f"🔗 **Your Referral Link:**\n"
-            f"`{ref_link}`\n"
-            "Share → friend buys → you earn rewards!\n"
-            "━━━━━━━━━━━━━━━━━━━━"
-        )
-        markup = InlineKeyboardMarkup()
-        markup.row(InlineKeyboardButton("🛒 Shop Now", callback_data="shop_menu"), InlineKeyboardButton("📦 My Orders", callback_data="my_orders"))
-        bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
-        
-    elif message.text == "📦 Orders":
-        user = users_col.find_one({"user_id": chat_id})
-        orders = user.get("orders", []) if user else []
-        text = "━━━━━━━━━━━━━━━━━━━━\n📦 **MY ORDERS (last 10)**\n━━━━━━━━━━━━━━━━━━━━\n\n"
-        if not orders: text += "You have no previous orders.\n\n"
-        else:
-            for i, o in enumerate(reversed(orders[-10:]), 1):
-                status = o.get("status", "Pending")
-                icon = "⏳" if status == "Pending" else ("✅" if "Approved" in status else "🚫")
-                plan_name = o.get("plan_name", o.get("name", "Product"))
-                text += f"{i}. {icon} **{plan_name}**\n   ⏱ {o.get('days', '-')} Days • 💰 ₹{o.get('price', 0)} • {status}\n"
-        text += "━━━━━━━━━━━━━━━━━━━━"
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🛒 Shop Again", callback_data="shop_menu"))
-        bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
-
-    elif message.text == "🎁 Referral":
-        bot_username = bot.get_me().username
-        ref_link = f"https://t.me/{bot_username}?start=ref_{chat_id}"
-        text = (
-            "🎁 **REFERRAL PROGRAM**\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            "📢 **How it works:**\n"
-            "↳ Share your link with friends\n"
-            "↳ When they complete their **1st order**, you earn wallet balance!\n\n"
-            f"🔗 **Your Referral Link:**\n`{ref_link}`\n\n"
-            "_Tap the link to copy and share!_"
-        )
-        bot.send_message(chat_id, text, parse_mode="Markdown")
-
-    elif message.text == "❓ How to Use":
-        tutorial = validate_url(config.get("tutorial_link", "https://youtube.com"))
-        text = (
-            "📖 **How to Buy — Panel Store Free Fire**\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            "1️⃣ Tap 🛒 **Shop Now**\n"
-            "2️⃣ Choose **Android** or **iOS**\n"
-            "3️⃣ Pick your product & plan\n"
-            "4️⃣ Scan the UPI QR or copy UPI ID\n"
-            "5️⃣ Pay the **exact** amount shown\n"
-            "6️⃣ Tap ✅ **I Have Paid**\n"
-            "7️⃣ Enter your UPI registered name\n"
-            "8️⃣ Send Screenshot\n"
-            "9️⃣ Sit back — your panel key arrives shortly! 🚀\n\n"
-            "⚠️ _Always pay the exact amount._"
-        )
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("▶️ Watch Tutorial on YouTube", url=tutorial))
-        bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
-
-    elif message.text == "🆘 Support":
-        support_link = validate_url(config.get("support_link"))
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("💬 Contact Support", url=support_link))
-        bot.send_message(chat_id, "🆘 **Need Help?**\n\nClick the button below to message our support team directly.", reply_markup=markup, parse_mode="Markdown")
-
-    elif message.text == "💰 Add Balance":
-        msg = bot.send_message(chat_id, "💰 **Add Balance to Wallet**\n\nEnter the amount you want to deposit in ₹ (Minimum ₹100):")
-        bot.register_next_step_handler(msg, step_add_balance)
 
 # --- ADMIN BOTTOM MENU ROUTER ---
 @bot.message_handler(func=lambda message: message.text == "⚙️ Admin Panel")
@@ -291,7 +185,6 @@ def back_to_main(message):
 def admin_menu_handler(message):
     chat_id = message.chat.id
     if not is_admin(chat_id): return
-    
     cmd = message.text
 
     if cmd == "📦 Product Management":
@@ -324,7 +217,7 @@ def admin_menu_handler(message):
         bot.register_next_step_handler(msg, step_custom_dm_id)
 
     elif cmd == "💰 Deposit Requests":
-        bot.send_message(chat_id, "💰 **Deposit Requests**\n\nAll pending wallet deposits submitted by users are automatically forwarded to you for approval with inline buttons.")
+        bot.send_message(chat_id, "💰 **Deposit Requests**\n\nPending wallet deposits will be forwarded here automatically for approval.")
 
     elif cmd == "🎟 Promo Codes" or cmd == "🎟 Coupon Management":
         markup = InlineKeyboardMarkup()
@@ -350,11 +243,13 @@ def admin_menu_handler(message):
         text = (
             "⚙️ **SETTINGS**\n\n"
             f"**UPI ID:** `{config.get('upi_id')}`\n"
+            f"**WhatsApp:** `{config.get('whatsapp_num', 'None')}`\n"
             f"**Welcome Msg:** `{config.get('welcome_msg', '')[:20]}...`\n"
         )
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("📝 Edit Welcome Msg", callback_data="set_welcome"))
         markup.add(InlineKeyboardButton("💳 Set UPI ID", callback_data="set_upi"))
+        markup.add(InlineKeyboardButton("📱 Set WhatsApp Number", callback_data="set_whatsapp"))
         markup.add(InlineKeyboardButton("🔗 Change Links", callback_data="admin_links"))
         markup.row(InlineKeyboardButton("👥 Add Admin", callback_data="admin_add"), InlineKeyboardButton("🚫 Remove Admin", callback_data="admin_remove"))
         bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
@@ -379,7 +274,19 @@ def callback_handler(call):
     elif call.data == "main_menu":
         main_menu(chat_id, msg_id, call.from_user.first_name)
 
-    # --- INLINE UI SECTIONS (From Welcome Screen) ---
+    # --- SUPPORT SUB-MENU ---
+    elif call.data == "support_menu":
+        sup_link = validate_url(config.get("support_link"))
+        wa_num = config.get("whatsapp_num", "1234567890").replace("+", "").replace(" ", "")
+        wa_link = f"https://wa.me/{wa_num}"
+        
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("💬 Telegram Support", url=sup_link))
+        markup.add(InlineKeyboardButton("🟢 WhatsApp Support", url=wa_link))
+        markup.add(InlineKeyboardButton("⬅️ Back to Menu", callback_data="main_menu"))
+        safe_edit_text("🆘 **Contact Support**\n\nChoose your preferred platform to contact our team:", chat_id, msg_id, markup)
+
+    # --- INLINE UI SECTIONS ---
     elif call.data == "my_orders":
         user = users_col.find_one({"user_id": chat_id})
         orders = user.get("orders", []) if user else []
@@ -561,7 +468,7 @@ def callback_handler(call):
         plans_col.delete_one({"_id": pid})
         safe_edit_text("✅ Plan deleted.", chat_id, msg_id, None)
 
-    # --- ADMIN APPROVALS (ORDERS) ---
+    # --- ADMIN APPROVALS (ORDERS) WITH AUTO DELIVERY ---
     elif call.data.startswith("approve_") or call.data.startswith("reject_"):
         if not is_admin(call.from_user.id): return bot.answer_callback_query(call.id, "Unauthorized", show_alert=True)
         parts = call.data.split("_")
@@ -579,56 +486,84 @@ def callback_handler(call):
         bot.edit_message_caption(f"{call.message.caption}\n\n**Status:** {new_status} (by {call.from_user.first_name})", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
         bot.answer_callback_query(call.id, f"Order {new_status}")
         
-        if action == "approve": bot.send_message(user_id, f"✅ **Payment Approved!**\n\nYour order for `{target_order.get('plan_name')}` was verified. The admin will DM your key shortly.", parse_mode="Markdown")
-        else: bot.send_message(user_id, f"❌ **Payment Rejected!**\n\nYour order for `{target_order.get('plan_name')}` could not be verified.", parse_mode="Markdown")
+        if action == "approve": 
+            plan_name = target_order.get('plan_name')
+            plan = plans_col.find_one({"name": plan_name})
+            
+            # Fetch a key if available
+            key_val = None
+            if plan:
+                key_doc = keys_col.find_one_and_delete({"plan_id": plan["_id"]})
+                if key_doc: key_val = key_doc["key"]
+                
+            if key_val:
+                bot.send_message(user_id, f"✅ **Payment Approved!**\n\nYour order for `{plan_name}` was verified.\n\n🔑 **Your Panel Key:**\n`{key_val}`\n\nEnjoy!", parse_mode="Markdown")
+            else:
+                bot.send_message(user_id, f"✅ **Payment Approved!**\n\nYour order for `{plan_name}` was verified. The admin will DM your key shortly (Auto-delivery empty).", parse_mode="Markdown")
+        else: 
+            bot.send_message(user_id, f"❌ **Payment Rejected!**\n\nYour order for `{target_order.get('plan_name')}` could not be verified.", parse_mode="Markdown")
 
-    # --- ADMIN APPROVALS (DEPOSITS) ---
-    elif call.data.startswith("dep_approve_") or call.data.startswith("dep_reject_"):
-        if not is_admin(call.from_user.id): return
-        parts = call.data.split("_")
-        action, user_id, amount = parts[1], int(parts[2]), float(parts[3])
-        
-        bot.edit_message_caption(f"{call.message.caption}\n\n🔒 **PROCESSED** ({action.upper()})", chat_id=chat_id, message_id=msg_id, parse_mode="Markdown")
-        bot.answer_callback_query(call.id, f"Deposit {action}")
-        
-        if action == "approve":
-            users_col.update_one({"user_id": user_id}, {"$inc": {"balance": amount}})
-            bot.send_message(user_id, f"✅ **Deposit Approved!**\n\n₹{amount} has been added to your wallet balance.")
-        else:
-            bot.send_message(user_id, f"❌ **Deposit Rejected!**\n\nYour request to add ₹{amount} was declined.")
+    # --- ADVANCED ADMIN MANAGEMENT (KEYS, PROMOS, RESELLERS) ---
+    elif call.data == "keys_add":
+        plans = list(plans_col.find())
+        if not plans: return bot.answer_callback_query(call.id, "Create a Plan first!", show_alert=True)
+        markup = InlineKeyboardMarkup()
+        for p in plans: markup.add(InlineKeyboardButton(f"{p['name']}", callback_data=f"addkey_{p['_id']}"))
+        markup.add(InlineKeyboardButton("⬅️ Back", callback_data="close_menu"))
+        safe_edit_text("🔑 Select Plan to add keys to:", chat_id, msg_id, markup)
 
-    # --- ADMIN USER MANAGEMENT CALLBACKS ---
-    elif call.data.startswith("addbal_"):
-        uid = int(call.data.split("_")[1])
+    elif call.data.startswith("addkey_"):
+        pid = call.data.replace("addkey_", "")
         bot.delete_message(chat_id, msg_id)
-        msg = bot.send_message(chat_id, "Enter amount to ADD to this user's balance:")
-        bot.register_next_step_handler(msg, lambda m: modify_balance(m, uid, True))
-    elif call.data.startswith("deductbal_"):
-        uid = int(call.data.split("_")[1])
-        bot.delete_message(chat_id, msg_id)
-        msg = bot.send_message(chat_id, "Enter amount to DEDUCT from this user's balance:")
-        bot.register_next_step_handler(msg, lambda m: modify_balance(m, uid, False))
+        msg = bot.send_message(chat_id, "📝 Send the keys separated by commas (,)\nExample: `KEY1, KEY2, KEY3`", parse_mode="Markdown")
+        bot.register_next_step_handler(msg, step_add_keys, pid)
 
-    # --- ADMIN SETTINGS CALLBACKS ---
-    elif call.data == "set_welcome":
-        msg = bot.send_message(chat_id, "Send your new Welcome Message.\nUse `{name}` and `{prod_count}` for dynamic text.")
-        bot.register_next_step_handler(msg, lambda m: settings_col.update_one({"_id": "config"}, {"$set": {"welcome_msg": m.text}}))
-    elif call.data == "set_upi":
-        msg = bot.send_message(chat_id, "Send your exact UPI ID:")
-        bot.register_next_step_handler(msg, lambda m: settings_col.update_one({"_id": "config"}, {"$set": {"upi_id": m.text.strip()}}))
-    elif call.data == "admin_links":
-        msg = bot.send_message(chat_id, "Send new links separated by a space:\n`Support Proof Tutorial`\nExample:\n`https://t.me/sup https://t.me/prf https://youtu.be/x`", parse_mode="Markdown")
-        bot.register_next_step_handler(msg, process_links)
-    elif call.data == "admin_add":
-        msg = bot.send_message(chat_id, "Send the Telegram User ID of the new admin:")
-        bot.register_next_step_handler(msg, process_add_admin)
-    elif call.data == "admin_remove":
-        msg = bot.send_message(chat_id, "Send the Telegram User ID of the admin to REMOVE:")
-        bot.register_next_step_handler(msg, process_remove_admin)
-        
-    # --- MOCK ADMIN MENUS (KEYS/PROMOS/RESELLERS) ---
-    elif call.data in ["keys_add", "keys_view", "promo_add", "promo_delete", "reseller_add", "reseller_remove"]:
-        bot.answer_callback_query(call.id, "Feature framework connected. Expansion pending.", show_alert=True)
+    elif call.data == "keys_view":
+        plans = list(plans_col.find())
+        text = "📊 **Key Statistics**\n\n"
+        for p in plans:
+            count = keys_col.count_documents({"plan_id": p["_id"]})
+            text += f"🔹 **{p['name']}**: `{count}` keys\n"
+        if not plans: text = "No plans found."
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("⬅️ Close", callback_data="close_menu"))
+        safe_edit_text(text, chat_id, msg_id, markup)
+
+    elif call.data == "promo_add":
+        bot.delete_message(chat_id, msg_id)
+        msg = bot.send_message(chat_id, "Enter new Promo Code (e.g. VIP20):")
+        bot.register_next_step_handler(msg, step_promo_code)
+
+    elif call.data == "promo_delete":
+        promos = list(promos_col.find())
+        if not promos: return bot.answer_callback_query(call.id, "No promos exist.", show_alert=True)
+        markup = InlineKeyboardMarkup()
+        for p in promos: markup.add(InlineKeyboardButton(f"❌ {p['code']} ({p['discount']}%)", callback_data=f"delpromo_{p['code']}"))
+        markup.add(InlineKeyboardButton("⬅️ Back", callback_data="close_menu"))
+        safe_edit_text("Select promo to delete:", chat_id, msg_id, markup)
+
+    elif call.data.startswith("delpromo_"):
+        code = call.data.split("_")[1]
+        promos_col.delete_one({"code": code})
+        safe_edit_text("✅ Promo deleted.", chat_id, msg_id, None)
+
+    elif call.data == "reseller_add":
+        bot.delete_message(chat_id, msg_id)
+        msg = bot.send_message(chat_id, "Enter Telegram User ID for new Reseller:")
+        bot.register_next_step_handler(msg, step_reseller_add)
+
+    elif call.data == "reseller_remove":
+        resellers = list(admins_col.find({"role": "reseller"}))
+        if not resellers: return bot.answer_callback_query(call.id, "No resellers exist.", show_alert=True)
+        markup = InlineKeyboardMarkup()
+        for r in resellers: markup.add(InlineKeyboardButton(f"❌ {r['user_id']}", callback_data=f"delreseller_{r['user_id']}"))
+        markup.add(InlineKeyboardButton("⬅️ Back", callback_data="close_menu"))
+        safe_edit_text("Select reseller to remove:", chat_id, msg_id, markup)
+
+    elif call.data.startswith("delreseller_"):
+        uid = int(call.data.split("_")[1])
+        admins_col.delete_one({"user_id": uid, "role": "reseller"})
+        safe_edit_text("✅ Reseller removed.", chat_id, msg_id, None)
 
 # --- CREATION STEP HANDLERS ---
 def step_prod_name(message):
@@ -676,6 +611,32 @@ def step_plan_price(message, prod_id):
     except:
         bot.send_message(message.chat.id, "❌ Price must be a valid number. Cancelled.")
 
+def step_add_keys(message, plan_id):
+    keys = [k.strip() for k in message.text.split(",") if k.strip()]
+    for k in keys: keys_col.insert_one({"plan_id": plan_id, "key": k})
+    bot.send_message(message.chat.id, f"✅ Successfully added {len(keys)} keys to the database.")
+
+def step_promo_code(message):
+    pending_inputs[message.chat.id] = {"code": message.text.strip().upper()}
+    msg = bot.send_message(message.chat.id, "Enter discount percentage (e.g. 10 for 10%):")
+    bot.register_next_step_handler(msg, step_promo_disc)
+
+def step_promo_disc(message):
+    try:
+        disc = int(message.text)
+        code = pending_inputs.pop(message.chat.id)["code"]
+        promos_col.insert_one({"code": code, "discount": disc})
+        bot.send_message(message.chat.id, f"✅ Promo `{code}` for {disc}% off created!", parse_mode="Markdown")
+    except:
+        bot.send_message(message.chat.id, "❌ Invalid discount number.")
+
+def step_reseller_add(message):
+    try:
+        uid = int(message.text)
+        if not admins_col.find_one({"user_id": uid}): admins_col.insert_one({"user_id": uid, "role": "reseller"})
+        bot.send_message(message.chat.id, f"✅ User {uid} is now a Reseller.")
+    except: bot.send_message(message.chat.id, "❌ Invalid ID.")
+
 # --- ADMIN UTILITY HANDLERS ---
 def process_links(message):
     try:
@@ -695,20 +656,6 @@ def process_broadcast(message):
         except: pass
     bot.send_message(message.chat.id, f"✅ Broadcast sent to {success} users.")
 
-def process_add_admin(message):
-    try:
-        new_admin = int(message.text)
-        if not admins_col.find_one({"user_id": new_admin}): admins_col.insert_one({"user_id": new_admin})
-        bot.send_message(message.chat.id, f"✅ User {new_admin} is now an admin.")
-    except: bot.send_message(message.chat.id, "❌ Invalid ID.")
-
-def process_remove_admin(message):
-    try:
-        remove_id = int(message.text)
-        admins_col.delete_one({"user_id": remove_id})
-        bot.send_message(message.chat.id, f"✅ Admin {remove_id} removed.")
-    except: bot.send_message(message.chat.id, "❌ Invalid ID.")
-
 def step_manage_user(message):
     try:
         uid = int(message.text)
@@ -725,7 +672,7 @@ def step_manage_user(message):
 def modify_balance(message, uid, is_add):
     try:
         amt = float(message.text)
-        op = "$inc" if is_add else "$inc" # we will pass negative value if deduct
+        op = "$inc" if is_add else "$inc" 
         if not is_add: amt = -amt
         users_col.update_one({"user_id": uid}, {op: {"balance": amt}})
         bot.send_message(message.chat.id, f"✅ User balance updated by ₹{amt}.")
@@ -748,32 +695,7 @@ def step_custom_dm_send(message, uid):
     except:
         bot.send_message(message.chat.id, "❌ Failed to send message. User may have blocked the bot.")
 
-# --- CHECKOUT & DEPOSIT FLOW ---
-def step_add_balance(message):
-    try:
-        amount = float(message.text)
-        if amount < 100: return bot.send_message(message.chat.id, "❌ Minimum deposit is ₹100.")
-        
-        config = settings_col.find_one({"_id": "config"})
-        upi_id = config.get("upi_id", "error@upi")
-        
-        text = (
-            f"💰 **WALLET DEPOSIT**\n━━━━━━━━━━━━━━━━━━\n"
-            f"**Amount:** ₹{amount}\n"
-            f"🔖 **UPI ID:** `{upi_id}`\n\n"
-            f"📲 *Scan the QR above to pay*\n"
-            f"⚠️ **Pay EXACTLY ₹{amount}**"
-        )
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("✅ I Have Paid", callback_data=f"paid_{amount}"))
-        markup.add(InlineKeyboardButton("❌ Cancel", callback_data="close_menu"))
-        
-        upi_url = f"upi://pay?pa={upi_id}&pn=PanelStore&am={amount}&cu=INR"
-        qr_link = f"https://api.qrserver.com/v1/create-qr-code/?size=400x400&data={urllib.parse.quote(upi_url)}"
-        bot.send_photo(message.chat.id, qr_link, caption=text, reply_markup=markup, parse_mode="Markdown")
-    except:
-        bot.send_message(message.chat.id, "❌ Invalid amount. Numbers only.")
-
+# --- CHECKOUT FLOW ---
 def process_upi_name(message, ref_id, is_deposit):
     pending_inputs[message.chat.id] = {"upi_name": message.text, "ref_id": ref_id, "is_deposit": is_deposit}
     msg = bot.send_message(message.chat.id, "📸 **Almost done!**\nPlease send the **Screenshot** of your successful payment now.", parse_mode="Markdown")
@@ -807,7 +729,7 @@ def process_payment_screenshot(message):
         order_id = str(uuid.uuid4())[:8].upper()
         new_order = {
             "order_id": order_id, "plan_name": plan["name"], "days": plan["days"],
-            "price": plan["price"], "status": "Pending Verification", "date": datetime.now().strftime("%d %b %Y")
+            "price": plan["price"], "status": "Pending Verification", "upi_name": data["upi_name"], "date": datetime.now().strftime("%d %b %Y")
         }
         users_col.update_one({"user_id": chat_id}, {"$push": {"orders": new_order}})
         
@@ -822,7 +744,6 @@ def process_payment_screenshot(message):
         markup = InlineKeyboardMarkup()
         markup.row(InlineKeyboardButton("✅ Approve", callback_data=f"approve_{chat_id}_{order_id}"), InlineKeyboardButton("❌ Reject", callback_data=f"reject_{chat_id}_{order_id}"))
     
-    # Broadcast to all admins
     bot.send_photo(OWNER_ID, message.photo[-1].file_id, caption=admin_caption, reply_markup=markup, parse_mode="Markdown")
     for admin in admins_col.find():
         if admin["user_id"] != OWNER_ID:
