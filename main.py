@@ -82,7 +82,6 @@ def check_force_join(user_id):
         return False
 
 def escape_md(text):
-    # Removes unclosed markdown characters from usernames to prevent crashes
     if not text: return "User"
     return str(text).replace("*", "").replace("_", "").replace("`", "").replace("[", "")
 
@@ -96,15 +95,14 @@ def safe_edit_text(text, chat_id, message_id, markup, image=None):
         try: bot.delete_message(chat_id, message_id)
         except: pass
         
-        # 🛡️ Markdown Fallback: If markdown is broken, send as plain text so it NEVER crashes
         if image:
             try: bot.send_photo(chat_id, image, caption=text, reply_markup=markup, parse_mode="Markdown")
             except Exception: 
-                try: bot.send_photo(chat_id, image, caption=text, reply_markup=markup) # Fallback without markdown
-                except: bot.send_message(chat_id, text, reply_markup=markup) # Fallback if image fails
+                try: bot.send_photo(chat_id, image, caption=text, reply_markup=markup) 
+                except: bot.send_message(chat_id, text, reply_markup=markup) 
         else:
             try: bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
-            except Exception: bot.send_message(chat_id, text, reply_markup=markup) # Fallback without markdown
+            except Exception: bot.send_message(chat_id, text, reply_markup=markup) 
 
 def validate_url(url):
     if not url or not str(url).startswith("http"):
@@ -136,7 +134,6 @@ def admin_main_keyboard():
 def send_welcome(message):
     chat_id = message.chat.id
     
-    # 🔔 NOTIFY ONLY OWNER AND TRUE ADMINS WHEN SOMEONE STARTS THE BOT
     try:
         safe_name = escape_md(message.from_user.first_name)
         safe_username = escape_md(message.from_user.username or 'None')
@@ -218,11 +215,11 @@ def main_menu(chat_id, message_id=None, user_first_name="User"):
         if welcome_image:
             try: bot.send_photo(chat_id, welcome_image, caption=text, reply_markup=markup, parse_mode="Markdown")
             except Exception: 
-                try: bot.send_photo(chat_id, welcome_image, caption=text, reply_markup=markup) # Safe Mode
+                try: bot.send_photo(chat_id, welcome_image, caption=text, reply_markup=markup) 
                 except: bot.send_message(chat_id, text, reply_markup=markup) 
         else:
             try: bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
-            except Exception: bot.send_message(chat_id, text, reply_markup=markup) # Safe Mode
+            except Exception: bot.send_message(chat_id, text, reply_markup=markup) 
 
 # --- BOTTOM MENU ROUTER ---
 @bot.message_handler(func=lambda message: message.text == "📁 Panel Files")
@@ -529,7 +526,7 @@ def callback_handler(call):
         plans_col.delete_one({"_id": pid})
         safe_edit_text("✅ Plan deleted.", chat_id, msg_id, None)
 
-    # --- ADMIN APPROVALS (ORDERS WITH AUTO-DELIVERY) ---
+    # --- ADMIN APPROVALS (ORDERS) ---
     elif call.data.startswith("approve_") or call.data.startswith("reject_"):
         if not is_admin(call.from_user.id): return bot.answer_callback_query(call.id, "Unauthorized", show_alert=True)
         parts = call.data.split("_")
