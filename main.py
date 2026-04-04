@@ -125,7 +125,7 @@ def admin_main_keyboard():
 def send_welcome(message):
     chat_id = message.chat.id
     
-    # 🔔 NOTIFY ADMINS WHEN SOMEONE STARTS THE BOT
+    # 🔔 NOTIFY ONLY OWNER AND TRUE ADMINS WHEN SOMEONE STARTS THE BOT
     try:
         admin_notification = (
             f"🔔 **USER STARTED THE BOT**\n"
@@ -135,9 +135,15 @@ def send_welcome(message):
             f"🔗 **Username:** @{message.from_user.username or 'None'}\n"
             f"━━━━━━━━━━━━━━━━━━"
         )
+        # Notify Owner
+        try: bot.send_message(OWNER_ID, admin_notification, parse_mode="Markdown")
+        except: pass
+        
+        # Notify true admins (excluding Owner to prevent duplicate, and excluding Resellers)
         for admin in admins_col.find():
-            try: bot.send_message(admin["user_id"], admin_notification, parse_mode="Markdown")
-            except: pass
+            if admin["user_id"] != OWNER_ID and admin.get("role") != "reseller":
+                try: bot.send_message(admin["user_id"], admin_notification, parse_mode="Markdown")
+                except: pass
     except: pass
 
     if not check_force_join(message.from_user.id):
@@ -854,10 +860,12 @@ def process_payment_screenshot(message):
         markup = InlineKeyboardMarkup()
         markup.row(InlineKeyboardButton("✅ Approve", callback_data=f"approve_{chat_id}_{order_id}"), InlineKeyboardButton("❌ Reject", callback_data=f"reject_{chat_id}_{order_id}"))
     
-    # Broadcast to all admins
-    bot.send_photo(OWNER_ID, message.photo[-1].file_id, caption=admin_caption, reply_markup=markup, parse_mode="Markdown")
+    # STRICT NOTIFICATION: ONLY Notify Owner and True Admins (NO Resellers)
+    try: bot.send_photo(OWNER_ID, message.photo[-1].file_id, caption=admin_caption, reply_markup=markup, parse_mode="Markdown")
+    except: pass
+    
     for admin in admins_col.find():
-        if admin["user_id"] != OWNER_ID:
+        if admin["user_id"] != OWNER_ID and admin.get("role") != "reseller":
             try: bot.send_photo(admin["user_id"], message.photo[-1].file_id, caption=admin_caption, reply_markup=markup, parse_mode="Markdown")
             except: pass
 
