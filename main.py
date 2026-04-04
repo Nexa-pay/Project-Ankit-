@@ -94,14 +94,12 @@ def validate_url(url):
 
 # --- KEYBOARDS ---
 def user_main_keyboard(user_id):
-    markup = ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(KeyboardButton("🛍 Shop Now"))
-    markup.row(KeyboardButton("📦 Orders"), KeyboardButton("👤 Profile"))
-    markup.row(KeyboardButton("💰 Add Balance"), KeyboardButton("🎁 Referral"))
-    markup.row(KeyboardButton("🆘 Support"), KeyboardButton("❓ How to Use"))
+    # Removes all bottom buttons EXCEPT Admin Panel for authorized users
     if is_admin(user_id):
+        markup = ReplyKeyboardMarkup(resize_keyboard=True)
         markup.add(KeyboardButton("⚙️ Admin Panel"))
-    return markup
+        return markup
+    return telebot.types.ReplyKeyboardRemove()
 
 def admin_main_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -165,10 +163,19 @@ def main_menu(chat_id, message_id=None, user_first_name="User"):
     markup.row(InlineKeyboardButton("↗️ Pay Proof", url=pay_proof_link), InlineKeyboardButton("❓ How to Use", callback_data="how_to_use"))
     markup.row(InlineKeyboardButton("💬 Support", url=support_link), InlineKeyboardButton("🎁 Referral", callback_data="my_referral"))
     
-    if message_id: safe_edit_text(text, chat_id, message_id, markup)
-    else: bot.send_message(chat_id, text, reply_markup=user_main_keyboard(chat_id), parse_mode="Markdown")
+    if message_id: 
+        safe_edit_text(text, chat_id, message_id, markup)
+    else: 
+        # Update the bottom keyboard seamlessly, then send the inline menu
+        if is_admin(chat_id):
+            bot.send_message(chat_id, "👑 **Admin Access Granted**", reply_markup=user_main_keyboard(chat_id), parse_mode="Markdown")
+        else:
+            m = bot.send_message(chat_id, "Loading store...", reply_markup=user_main_keyboard(chat_id))
+            bot.delete_message(chat_id, m.message_id)
+            
+        bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
 
-# --- BOTTOM MENU ROUTER (Users) ---
+# --- BOTTOM MENU ROUTER (Users - Kept for legacy compatibility) ---
 @bot.message_handler(func=lambda message: message.text in ["🛍 Shop Now", "📦 Orders", "👤 Profile", "💰 Add Balance", "🎁 Referral", "❓ How to Use", "🆘 Support"])
 def user_bottom_menu(message):
     chat_id = message.chat.id
