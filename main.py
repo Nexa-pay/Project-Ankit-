@@ -114,12 +114,11 @@ def validate_url(url):
 
 # --- KEYBOARDS ---
 def user_main_keyboard(user_id):
-    markup = ReplyKeyboardMarkup(resize_keyboard=True)
     if is_admin(user_id):
-        markup.row(KeyboardButton("📁 Panel Files"), KeyboardButton("⚙️ Admin Panel"))
-    else:
-        markup.add(KeyboardButton("📁 Panel Files"))
-    return markup
+        markup = ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add(KeyboardButton("⚙️ Admin Panel"))
+        return markup
+    return telebot.types.ReplyKeyboardRemove()
 
 def admin_main_keyboard():
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -136,7 +135,7 @@ def admin_main_keyboard():
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     chat_id = message.chat.id
-
+    
     try:
         safe_name = escape_md(message.from_user.first_name)
         safe_username = escape_md(message.from_user.username or 'None')
@@ -193,6 +192,7 @@ def handle_contact(message):
 def main_menu(chat_id, message_id=None, user_first_name="User"):
     config = settings_col.find_one({"_id": "config"}) or {}
     pay_proof_link = validate_url(config.get("pay_proof_link"))
+    panel_files_link = validate_url(config.get("panel_files_link", "https://t.me/Nexapayz"))
     welcome_image = config.get("welcome_image", "")
     
     welcome_template = config.get("welcome_msg")
@@ -207,13 +207,15 @@ def main_menu(chat_id, message_id=None, user_first_name="User"):
     markup.row(InlineKeyboardButton("📦 My Orders", callback_data="my_orders"), InlineKeyboardButton("👤 Profile", callback_data="my_profile"))
     markup.row(InlineKeyboardButton("↗️ Pay Proof", url=pay_proof_link), InlineKeyboardButton("❓ How to Use", callback_data="how_to_use"))
     markup.row(InlineKeyboardButton("💬 Support", callback_data="support_menu"), InlineKeyboardButton("🎁 Referral", callback_data="my_referral"))
+    markup.add(InlineKeyboardButton("📁 Panel Files", url=panel_files_link))
     
     if message_id: 
         safe_edit_text(text, chat_id, message_id, markup, image=welcome_image)
     else: 
-        m = bot.send_message(chat_id, "Loading store...", reply_markup=user_main_keyboard(chat_id))
-        try: bot.delete_message(chat_id, m.message_id)
-        except: pass
+        if is_admin(chat_id):
+            bot.send_message(chat_id, "👑 **Admin Access Verified**", reply_markup=user_main_keyboard(chat_id), parse_mode="Markdown")
+        else:
+            bot.send_message(chat_id, "✅ **Menu Loaded**", reply_markup=user_main_keyboard(chat_id), parse_mode="Markdown")
             
         if welcome_image:
             try: bot.send_photo(chat_id, welcome_image, caption=text, reply_markup=markup, parse_mode="Markdown")
@@ -224,16 +226,7 @@ def main_menu(chat_id, message_id=None, user_first_name="User"):
             try: bot.send_message(chat_id, text, reply_markup=markup, parse_mode="Markdown")
             except Exception: bot.send_message(chat_id, text, reply_markup=markup) 
 
-# --- BOTTOM MENU ROUTER ---
-@bot.message_handler(func=lambda message: message.text == "📁 Panel Files")
-def handle_panel_files(message):
-    config = settings_col.find_one({"_id": "config"}) or {}
-    panel_link = validate_url(config.get("panel_files_link", "https://t.me/Nexapayz"))
-    
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🔗 Open Panel Files", url=panel_link))
-    bot.send_message(message.chat.id, "📁 **Click the button below to access Panel Files:**", reply_markup=markup, parse_mode="Markdown")
-
+# --- ADMIN BOTTOM MENU ROUTER ---
 @bot.message_handler(func=lambda message: message.text == "⚙️ Admin Panel")
 def enter_admin_panel(message):
     if not is_admin(message.from_user.id): return
